@@ -24,6 +24,17 @@ AHK_SCRIPT = PROJECT_DIR / "send_bill_signal.ahk"
 
 # ສ່ວນຂອງຖ່າຍຮູບບິນ (capture_bill_screenshot.py) ຢູ່ໂຟນເດີແມ່ (Testing / send_bill)
 PROJECT_ROOT = PROJECT_DIR.parent
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+try:
+    from settings.config_io import check_setup_status
+    from settings.settings_ui import open_settings_window
+except ImportError:
+    check_setup_status = None  # type: ignore
+    open_settings_window = None  # type: ignore
+
 CAPTURE_SCRIPT = PROJECT_ROOT / "capture_bill_screenshot.py"
 HAL_CAPTURE_SCRIPT = PROJECT_ROOT / "capture_bill_hal.py"
 AUTH_JSON = PROJECT_ROOT / "auth.json"
@@ -950,6 +961,47 @@ def main():
 
     root.after(200, poll_queue)
 
+    # Settings + first-run
+    def open_settings():
+        if open_settings_window is None:
+            messagebox.showerror(
+                "ຜິດພາດ",
+                "ບໍ່ພົບ settings module — ກວດວ່າມີໂຟນເດີ settings ໃນໂປຣເຈັກ",
+            )
+            return
+        open_settings_window(root, PROJECT_ROOT)
+
+    def maybe_first_run_settings():
+        if check_setup_status is None:
+            return
+        try:
+            st = check_setup_status(PROJECT_ROOT)
+        except Exception as e:
+            append_status(f"[Settings] check failed: {e}\n")
+            return
+        if not st.all_critical_ok:
+            missing = "\n".join(f"• {x}" for x in st.missing_labels()[:8])
+            messagebox.showinfo(
+                "Setup needed",
+                "ຍັງຕ້ອງຕັ້ງຄ່າກ່ອນໃຊ້ງານ (Settings):\n\n"
+                f"{missing}\n\n"
+                "ກະລຸນາກອກຂໍ້ມູນໃນໜ້າຕ່າງ Settings ແລ້ວກົດບັນທຶກ",
+            )
+            open_settings()
+
+    # แถว Settings
+    lbl0 = ttk.Label(root, text="Setup:", font=("", 9, "bold"))
+    lbl0.pack(anchor=tk.W, padx=10, pady=(6, 0))
+    btn_frame0 = ttk.Frame(root)
+    btn_frame0.pack(fill=tk.X, padx=8, pady=2)
+    btn_settings = ttk.Button(btn_frame0, text="Settings…", command=open_settings)
+    btn_settings.pack(side=tk.LEFT, padx=(0, 8))
+    ttk.Label(
+        btn_frame0,
+        text="Sheet / เพจ·Token / Webhook·ngrok",
+        foreground="#555",
+    ).pack(side=tk.LEFT)
+
     # ປຸ່ມແຖວ 1: Browser-based (Playwright / Manual)
     lbl1 = ttk.Label(root, text="Browser (Playwright):", font=("", 9, "bold"))
     lbl1.pack(anchor=tk.W, padx=10, pady=(6, 0))
@@ -1000,6 +1052,8 @@ def main():
     lbl_auto_cleanup_status.pack(side=tk.LEFT)
 
     refresh_auto_cleanup_status()
+
+    root.after(400, maybe_first_run_settings)
 
     root.protocol("WM_DELETE_WINDOW", on_closing)
     root.mainloop()
