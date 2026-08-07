@@ -62,3 +62,9 @@ psid_name_cache.json
 # IDE
 .cursor/
 .vscode/
+
+# Config backups from Settings UI
+*.bak
+*.json.bak
+.env.env.bak
+
