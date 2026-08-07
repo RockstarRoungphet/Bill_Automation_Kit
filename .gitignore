@@ -1,0 +1,64 @@
+# Secrets — never commit
+.env
+auth.json
+*.pem
+*.key
+*secret*.json
+*token*.json
+!*token*.example.json
+!*token*.example.*
+config_templates/*.example.json
+*credentials*.json
+page_token.json
+google_credentials.json
+user_settings.json
+user_messages.json
+
+# Secrets only under config/ (starter placeholders sheet/map may be committed)
+no_api_send_bill/config/google_credentials.json
+# page_token.json covered by *token*.json above
+
+# Python
+__pycache__/
+.venv/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs / debug
+*.log
+*.pid
+*.out
+debug-*.log
+
+# Runtime / browser sessions
+browser_profile/
+hal_browser_profile/
+no_api_send_bill/browser_profile/
+inbox/
+bill_images/*
+!bill_images/.gitkeep
+product_images/*
+!product_images/.gitkeep
+!product_images/README.md
+promo_images/*
+!promo_images/.gitkeep
+!promo_images/README.md
+
+# Local tools
+cloudflared
+ngrok
+ngrok.exe
+
+# Runtime JSON (machine-local)
+seen_senders.json
+order_psid.json
+tester_psid.json
+last_message_by_psid.json
+last_promo_sent.json
+phone_detected_psid.json
+psid_name_cache.json
+
+# IDE
+.cursor/
+.vscode/

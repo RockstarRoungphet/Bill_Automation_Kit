@@ -1,0 +1,6 @@
+{
+  "ngrok_domain": "your-subdomain.ngrok-free.dev",
+  "webhook_port": 5000,
+  "facebook_user_data_dir": "no_api_send_bill/browser_profile",
+  "hal_user_data_dir": "hal_browser_profile"
+}

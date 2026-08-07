@@ -1,0 +1,7 @@
+{
+  "promo_send_after_hours": 6,
+  "promo_send_before_hours": 23,
+  "promo_auto_send_disabled": true,
+  "messenger_auto_replies_disabled": false,
+  "generic_reply_disabled": true
+}

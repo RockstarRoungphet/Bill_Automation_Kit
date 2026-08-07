@@ -1,0 +1,9 @@
+[
+  {
+    "page_id": "YOUR_FACEBOOK_PAGE_ID",
+    "page_name": "YourPageName",
+    "access_token": "YOUR_PAGE_ACCESS_TOKEN",
+    "enabled": true,
+    "subscribed_fields": ["messages", "messaging_postbacks", "message_echoes"]
+  }
+]

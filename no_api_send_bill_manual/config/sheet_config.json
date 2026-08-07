@@ -1,0 +1,5 @@
+{
+  "sheet_id": "YOUR_GOOGLE_SHEET_ID",
+  "sheet_names": ["ອໍເດີ່", "ພຣີອໍເດີ່", "ອໍເດີ່ມີບັນຫາ"],
+  "credentials_path": "../no_api_send_bill/config/google_credentials.json"
+}

@@ -1,0 +1,12 @@
+{
+  "promo_send_after_hours": 6,
+  "promo_send_before_hours": 23,
+  "promo_auto_send_disabled": true,
+  "messenger_auto_replies_disabled": false,
+  "generic_reply_disabled": true,
+  "YourPageName": {
+    "welcome_text": "Welcome text for your page (Lao/Thai)...",
+    "price_reply": "Price reply text...",
+    "promo_text": "Promo text (optional)..."
+  }
+}
