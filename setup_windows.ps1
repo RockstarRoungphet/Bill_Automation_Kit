@@ -1,22 +1,31 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  One-shot Windows setup for Automation_Work (venv x3, Playwright, runtime dirs, secret checks).
+  One-shot Windows setup for Bill_Automation_Kit
+  (venv x3, Playwright, runtime dirs, desktop shortcuts, secret checks).
 
 .EXAMPLE
   .\setup_windows.ps1
   .\setup_windows.ps1 -InstallPrerequisites
   .\setup_windows.ps1 -SkipPlaywright
+  .\setup_windows.ps1 -InstallPrerequisites -CreateDesktopShortcuts
 #>
 [CmdletBinding()]
 param(
     [switch]$SkipPlaywright,
-    [switch]$InstallPrerequisites
+    [switch]$InstallPrerequisites,
+    [switch]$CreateDesktopShortcuts,
+    [switch]$SkipDesktopShortcuts
 )
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = $PSScriptRoot
 Set-Location $ProjectRoot
+
+# Default: create desktop icons unless explicitly skipped
+if (-not $PSBoundParameters.ContainsKey("CreateDesktopShortcuts") -and -not $SkipDesktopShortcuts) {
+    $CreateDesktopShortcuts = $true
+}
 
 function Write-Step([string]$Message) {
     Write-Host ""
@@ -35,7 +44,14 @@ function Write-Err([string]$Message) {
     Write-Host "  ERR $Message" -ForegroundColor Red
 }
 
+function Refresh-PathEnv {
+    $machine = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+    $user = [System.Environment]::GetEnvironmentVariable("Path", "User")
+    $env:Path = "$machine;$user"
+}
+
 function Resolve-PythonExe {
+    Refresh-PathEnv
     foreach ($cmd in @("py -3", "python", "python3")) {
         try {
             $exe = & cmd /c "$cmd -c `"import sys; print(sys.executable)`"" 2>$null
@@ -43,6 +59,17 @@ function Resolve-PythonExe {
                 return $exe.Trim()
             }
         } catch { }
+    }
+    # Common install locations if PATH not refreshed yet
+    $candidates = @(
+        "$env:LocalAppData\Programs\Python\Python312\python.exe",
+        "$env:LocalAppData\Programs\Python\Python313\python.exe",
+        "$env:LocalAppData\Programs\Python\Python311\python.exe",
+        "${env:ProgramFiles}\Python312\python.exe",
+        "${env:ProgramFiles}\Python311\python.exe"
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) { return $c }
     }
     return $null
 }
@@ -58,10 +85,13 @@ function Try-WingetInstall([string]$PackageId, [string]$Label) {
     }
     Write-Host "  Installing $Label via winget ($PackageId)..."
     $proc = Start-Process -FilePath "winget" -ArgumentList @(
-        "install", "--id", $PackageId, "-e", "--accept-package-agreements", "--accept-source-agreements"
+        "install", "--id", $PackageId, "-e",
+        "--accept-package-agreements", "--accept-source-agreements",
+        "--disable-interactivity"
     ) -Wait -PassThru -NoNewWindow
     if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) {
         Write-Ok "$Label installed (or already present)"
+        Refresh-PathEnv
         return $true
     }
     Write-Warn "winget install $Label exited with code $($proc.ExitCode)"
@@ -78,19 +108,19 @@ function Ensure-Venv(
         Write-Host "  Creating venv: $VenvDir"
         & $py -m venv $VenvDir
     }
-    $pip = Join-Path $VenvDir "Scripts\pip.exe"
     $venvPy = Join-Path $VenvDir "Scripts\python.exe"
-    if (-not (Test-Path $pip)) {
-        throw "pip not found in $VenvDir"
+    if (-not (Test-Path $venvPy)) {
+        throw "python not found in $VenvDir"
     }
-    & $pip install -q --upgrade pip
+    # Use python -m pip (avoids "To modify pip" error on some Windows installs)
+    & $venvPy -m pip install -q --upgrade pip
     if (Test-Path $RequirementsFile) {
         Write-Host "  pip install -r $RequirementsFile"
-        & $pip install -q -r $RequirementsFile
+        & $venvPy -m pip install -q -r $RequirementsFile
     }
     foreach ($pkg in $ExtraPip) {
         Write-Host "  pip install $pkg"
-        & $pip install -q $pkg
+        & $venvPy -m pip install -q $pkg
     }
     return $venvPy
 }
@@ -98,6 +128,31 @@ function Ensure-Venv(
 function Install-PlaywrightChromium([string]$VenvPython) {
     Write-Host "  playwright install chromium ($VenvPython)"
     & $VenvPython -m playwright install chromium
+}
+
+function New-DesktopShortcut(
+    [string]$Name,
+    [string]$TargetPath,
+    [string]$WorkingDirectory,
+    [string]$Description,
+    [string]$IconPath
+) {
+    if (-not (Test-Path $TargetPath)) {
+        Write-Warn "Skip shortcut '$Name' - target missing: $TargetPath"
+        return
+    }
+    $shell = New-Object -ComObject WScript.Shell
+    $desktop = [Environment]::GetFolderPath("Desktop")
+    $lnk = Join-Path $desktop "$Name.lnk"
+    $sc = $shell.CreateShortcut($lnk)
+    $sc.TargetPath = $TargetPath
+    $sc.WorkingDirectory = $WorkingDirectory
+    $sc.Description = $Description
+    if ($IconPath -and (Test-Path $IconPath)) {
+        $sc.IconLocation = $IconPath
+    }
+    $sc.Save()
+    Write-Ok "Desktop: $Name.lnk"
 }
 
 # --- A. Prerequisites ---
@@ -112,6 +167,7 @@ if (-not $script:PythonExe) {
     }
     if (-not $script:PythonExe) {
         Write-Err "Install Python, then re-run: winget install Python.Python.3.12"
+        Write-Err "Or double-click INSTALL.bat again after installing Python."
         exit 1
     }
 }
@@ -124,18 +180,21 @@ if ($ngrokCmd -or $ngrokLocal) {
     $ngrokPath = if ($ngrokCmd) { $ngrokCmd.Source } else { (Join-Path $ProjectRoot "ngrok.exe") }
     Write-Ok "ngrok: $ngrokPath"
 } else {
-    Write-Warn "ngrok not found (PATH or .\ngrok.exe)"
-    Write-Warn "  winget install ngrok.ngrok"
-    Write-Warn '  ngrok config add-authtoken YOUR_TOKEN'
+    Write-Warn "ngrok not found (PATH or .\ngrok.exe) - optional until Webhook/Token setup"
+    Write-Warn "  Download: https://ngrok.com/download  or  winget search ngrok"
     if ($InstallPrerequisites) {
-        Try-WingetInstall "ngrok.ngrok" "ngrok"
+        # Package id varies by winget source; try common ids then ignore failure
+        $ok = Try-WingetInstall "Ngrok.Ngrok" "ngrok"
+        if (-not $ok) { Try-WingetInstall "ngrok.ngrok" "ngrok" | Out-Null }
     }
 }
 
+Refresh-PathEnv
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Warn "git not on PATH"
     if ($InstallPrerequisites) {
         Try-WingetInstall "Git.Git" "Git"
+        Refresh-PathEnv
     }
 } else {
     Write-Ok "git: $(git --version)"
@@ -150,7 +209,6 @@ if ($ahkFound) {
     Write-Ok "AutoHotkey v2: $ahkFound"
 } else {
     Write-Warn "AutoHotkey v2 not found (optional - for send_bill_signal.ahk)"
-    Write-Warn "  https://www.autohotkey.com/ or winget install AutoHotkey.AutoHotkey"
 }
 
 # --- B. Virtual environments ---
@@ -193,12 +251,30 @@ foreach ($dir in @("bill_images", "browser_profile", "hal_browser_profile")) {
     }
 }
 
-# --- E. Secrets check (warnings only) ---
-Write-Step "Secrets and config (copy from old PC if missing)"
+# --- E. Desktop shortcuts ---
+if ($CreateDesktopShortcuts -and -not $SkipDesktopShortcuts) {
+    Write-Step "Creating desktop shortcuts"
+    $icon = Join-Path $ProjectRoot "no_api_send_bill_manual\send_bill.ico"
+    New-DesktopShortcut `
+        -Name "Send Bill Launcher" `
+        -TargetPath (Join-Path $ProjectRoot "no_api_send_bill_manual\run_launcher_ui.vbs") `
+        -WorkingDirectory (Join-Path $ProjectRoot "no_api_send_bill_manual") `
+        -Description "Bill Automation Kit - Send Bill Launcher" `
+        -IconPath $icon
+    New-DesktopShortcut `
+        -Name "Capture Bill Launcher" `
+        -TargetPath (Join-Path $ProjectRoot "run_capture_launcher.vbs") `
+        -WorkingDirectory $ProjectRoot `
+        -Description "Bill Automation Kit - Capture Bill Launcher" `
+        -IconPath $icon
+}
+
+# --- F. Secrets check (warnings only) ---
+Write-Step "Secrets and config (fill via Settings UI - do not copy from another PC blindly)"
 
 $secretChecks = @(
-    @{ Path = ".env"; Note = "ANOUSITH_*, HAL_*, WEBHOOK_VERIFY_TOKEN, ..." },
-    @{ Path = "auth.json"; Note = "Anousith Playwright session (Capture private)" },
+    @{ Path = ".env"; Note = "WEBHOOK_VERIFY_TOKEN, ..." },
+    @{ Path = "auth.json"; Note = "Anousith Playwright session (optional)" },
     @{ Path = "no_api_send_bill\config\google_credentials.json"; Note = "Google Sheets API" },
     @{ Path = "page_token.json"; Note = "Facebook Page tokens" }
 )
@@ -214,13 +290,7 @@ foreach ($item in $secretChecks) {
     }
 }
 
-$envExample = Join-Path $ProjectRoot ".env.example"
-$envFile = Join-Path $ProjectRoot ".env"
-if (-not (Test-Path $envFile) -and (Test-Path $envExample)) {
-    Write-Warn "No .env - run: Copy-Item .env.example .env  then edit values"
-}
-
-# --- F. Smoke test ---
+# --- G. Smoke test ---
 Write-Step "Smoke test (imports)"
 $smoke = @"
 import playwright
@@ -235,25 +305,24 @@ if ($LASTEXITCODE -eq 0) {
     Write-Warn "Smoke test failed - check errors above"
 }
 
-# --- G. Summary ---
+# --- H. Summary ---
 Write-Step "Done"
 Write-Host @"
 
-Next steps (Bill Automation Kit):
-  1. Copy templates — see README.md and SECRETS_CHECKLIST.md
-  2. Fill .env, page_token.json, google_credentials.json, sheet_config
-  3. Set ngrok: user_settings.json or env NGROK_DOMAIN
-  4. ngrok once: ngrok config add-authtoken YOUR_TOKEN
-  5. Open Launcher:
-       cd $ProjectRoot\no_api_send_bill_manual
-       ..\.venv\Scripts\pythonw.exe launcher_ui.py
+Next steps (no AI required):
+  1. Double-click Desktop icon:  Send Bill Launcher
+  2. Settings opens on first run if config is incomplete
+  3. Fill: Google Sheet / Facebook pages / Webhook+ngrok
+  4. Save - then use Token / Playwright send as usual
 
-Settings UI (phase 1) will live under settings\ — not required for file-based setup.
+Re-run install anytime:
+  Double-click INSTALL.bat
+  or:  .\setup_windows.ps1 -InstallPrerequisites
 
 "@ -ForegroundColor White
 
 if ($missingSecrets -gt 0) {
-    Write-Warn "$missingSecrets secret file(s) still missing - Capture/Webhook may fail until copied."
+    Write-Warn "$missingSecrets secret file(s) still missing - fill them in Settings UI."
     exit 0
 }
 

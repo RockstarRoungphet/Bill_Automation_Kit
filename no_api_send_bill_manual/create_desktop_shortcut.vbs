@@ -23,4 +23,6 @@ If fso.FileExists(iconPath) Then
 End If
 shortcut.Save()
 
+' Note: INSTALL.bat / setup_windows.ps1 already creates this shortcut.
+' This VBS remains for manual re-create if the Desktop icon was deleted.
 MsgBox "Create shortcut on Desktop finished." & vbCrLf & "Name: Send Bill Launcher", 64, "Send Bill Manual"

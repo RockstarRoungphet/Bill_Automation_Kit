@@ -15,27 +15,22 @@
 - Google Sheet + Service Account JSON
 - (ถ้าใช้ Webhook) ngrok
 
-## ติดตั้งครั้งแรก
+## ติดตั้งครั้งแรก (แนะนำ — ดับเบิลคลิกอย่างเดียว)
+
+1. Clone หรือ unzip โฟลเดอร์ `Bill_Automation_Kit`
+2. ดับเบิลคลิก **`INSTALL.bat`** ที่ root ของโปรเจค  
+   (ติดตั้ง Python/venv/Playwright + สร้างไอคอน Desktop อัตโนมัติ)
+3. ดับเบิลคลิกไอคอน Desktop **Send Bill Launcher**
+4. กรอก **Settings** เอง (Sheet / เพจ Facebook / Webhook) — ไม่ต้องพึ่ง AI
+
+ถ้ายังตั้งค่าไม่ครบ Launcher จะเปิด Settings ให้อัตโนมัติตอนเริ่ม (first-run)
+
+### ทางเลือก: รันจาก PowerShell
 
 ```powershell
 cd C:\Bill_Automation_Kit
-.\setup_windows.ps1
-# หรือ
 .\setup_windows.ps1 -InstallPrerequisites
 ```
-
-## ตั้งค่า (Settings UI — แนะนำ)
-
-1. เปิด Launcher (ด้านล่าง)
-2. กด **Settings…** (แถว Setup)
-3. กรอกแท็บ:
-   - **Google Sheet** — Sheet ID, ชื่อชีต, เลือกไฟล์ Service Account JSON  
-   - **เพจ Facebook** — ชื่อเพจ, Page ID, Access Token  
-   - **Webhook / ngrok** — verify token, PORT, โดเมน ngrok  
-4. กด **บันทึก** (รายแท็บหรือ **บันทึกทั้งหมด**)
-5. ดูแท็บ **Checklist** ว่า critical เป็น OK
-
-ถ้ายังตั้งค่าไม่ครบ Launcher จะเปิด Settings ให้อัตโนมัติตอนเริ่ม (first-run)
 
 ### ตั้งค่าด้วยมือ (ถ้าต้องการ)
 
@@ -46,11 +41,13 @@ cd C:\Bill_Automation_Kit
 
 ## เปิด Launcher
 
+- **Desktop:** ไอคอน **Send Bill Launcher** (สร้างหลัง `INSTALL.bat`)
+- หรือดับเบิลคลิก `no_api_send_bill_manual\run_launcher_ui.vbs`
+- หรือ:
+
 ```powershell
 cd C:\Bill_Automation_Kit\no_api_send_bill_manual
 ..\.venv\Scripts\pythonw.exe launcher_ui.py
-# หรือ
-..\.venv\Scripts\python.exe launcher_ui.py
 ```
 
 ## โฟลเดอร์สำคัญ
@@ -81,4 +78,5 @@ git pull
 
 - **เฟส 0** — scaffold ชุดแจก + เทมเพลต  
 - **เฟส 1** — Settings UI (Sheet / เพจ·Token / Webhook·ngrok / checklist + first-run)  
+- **One-click install** — `INSTALL.bat` + Desktop shortcuts อัตโนมัติ (ดู [docs/HANDOFF_ONE_CLICK_INSTALL.md](docs/HANDOFF_ONE_CLICK_INSTALL.md))  
 - **เฟส 2+** — ข้อความ welcome, browser profile, ขนส่ง (ยังไม่ทำ)

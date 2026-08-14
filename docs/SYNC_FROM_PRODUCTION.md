@@ -30,9 +30,13 @@ capture_playwright_nav.py
 save_auth_state.py
 requirements.txt
 setup_windows.ps1
+INSTALL.bat
+docs/HANDOFF_ONE_CLICK_INSTALL.md
 no_api_send_bill/scripts/*.py
 no_api_send_bill_manual/launcher_ui.py
 no_api_send_bill_manual/run_manual.py
+no_api_send_bill_manual/run_launcher_ui.bat
+no_api_send_bill_manual/run_launcher_ui.vbs
 no_api_send_bill_manual/send_bill_signal.ahk
 ... (สคริปต์อื่นที่ไม่ผูกบัญชี)
 ```
