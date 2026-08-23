@@ -24,6 +24,34 @@ ENV_KEYS_SETTINGS = (
     "BASE_URL",
 )
 
+ENV_KEYS_CARRIER = (
+    "ANOUSITH_USER",
+    "ANOUSITH_PASSWORD",
+    "HAL_USER",
+    "HAL_PASSWORD",
+)
+
+PAGE_REPLY_TOP_KEYS = (
+    "promo_send_after_hours",
+    "promo_send_before_hours",
+    "promo_auto_send_disabled",
+    "messenger_auto_replies_disabled",
+    "generic_reply_disabled",
+)
+
+PAGE_REPLY_TEXT_KEYS = (
+    "welcome_text",
+    "price_reply",
+    "promo_text",
+    "cod_reply",
+    "order_reply",
+)
+
+PAGE_MEDIA_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+PAGE_MEDIA_VIDEO_EXT = {".mp4", ".mov", ".m4v", ".webm"}
+PAGE_MEDIA_ALL_EXT = PAGE_MEDIA_IMAGE_EXT | PAGE_MEDIA_VIDEO_EXT
+PAGE_MEDIA_KINDS = ("welcome", "promo")
+
 META_MAP_KEYS = (
     "__business_pages",
     "__initial_selected_item_id",
@@ -378,6 +406,255 @@ class ConfigIO:
             us["webhook_port"] = 5000
         self.save_json(self.user_settings_path, us)
 
+    # --- browser profile paths ---
+
+    def resolve_user_data_path(self, rel_or_abs: str) -> Path:
+        """Resolve a stored path relative to kit root (or absolute as-is)."""
+        raw = (rel_or_abs or "").strip()
+        if not raw:
+            return self.root.resolve()
+        p = Path(raw)
+        if not p.is_absolute():
+            p = self.root / p
+        return p.resolve()
+
+    def to_stored_user_data_path(self, rel_or_abs: str) -> str:
+        """Store as relative (posix) under kit root when possible; else absolute."""
+        resolved = self.resolve_user_data_path(rel_or_abs)
+        try:
+            return resolved.relative_to(self.root.resolve()).as_posix()
+        except ValueError:
+            return str(resolved)
+
+    def save_browser_profile_fields(self, facebook_dir: str, hal_dir: str) -> None:
+        fb_stored = self.to_stored_user_data_path(
+            facebook_dir or "no_api_send_bill/browser_profile"
+        )
+        hal_stored = self.to_stored_user_data_path(hal_dir or "hal_browser_profile")
+        us = self.load_user_settings()
+        us["facebook_user_data_dir"] = fb_stored
+        us["hal_user_data_dir"] = hal_stored
+        self.save_json(self.user_settings_path, us)
+        abs_hal = str(self.resolve_user_data_path(hal_stored))
+        self.merge_dotenv({"HAL_USER_DATA_DIR": abs_hal})
+
+    # --- carrier (.env) ---
+
+    def load_carrier_fields(self) -> Dict[str, str]:
+        env = self.load_dotenv_map()
+        return {k: str(env.get(k) or "") for k in ENV_KEYS_CARRIER}
+
+    def save_carrier_fields(
+        self,
+        anousith_user: str,
+        anousith_password: str,
+        hal_user: str,
+        hal_password: str,
+    ) -> None:
+        self.merge_dotenv(
+            {
+                "ANOUSITH_USER": (anousith_user or "").strip(),
+                "ANOUSITH_PASSWORD": (anousith_password or "").strip(),
+                "HAL_USER": (hal_user or "").strip(),
+                "HAL_PASSWORD": (hal_password or "").strip(),
+            }
+        )
+
+    def real_page_names(self, pages: Optional[List[Dict[str, Any]]] = None) -> List[str]:
+        rows = pages if pages is not None else self.load_page_tokens()
+        names: List[str] = []
+        seen = set()
+        for p in rows:
+            name = str(p.get("page_name") or "").strip()
+            pid = str(p.get("page_id") or "").strip()
+            if not name or name == PLACEHOLDER_PAGE_NAME:
+                continue
+            if pid in ("", PLACEHOLDER_PAGE_ID) or pid.upper().startswith("YOUR_"):
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+            names.append(name)
+        return names
+
+    # --- page_reply_config.json ---
+
+    def load_page_reply_config(self) -> Dict[str, Any]:
+        self.ensure_seeded()
+        raw = self.load_json(self.page_reply_path, {})
+        if not isinstance(raw, dict):
+            raw = {}
+        globals_out: Dict[str, Any] = {
+            "promo_send_after_hours": raw.get("promo_send_after_hours", 6),
+            "promo_send_before_hours": raw.get("promo_send_before_hours", 23),
+            "promo_auto_send_disabled": bool(raw.get("promo_auto_send_disabled")),
+            "messenger_auto_replies_disabled": bool(
+                raw.get("messenger_auto_replies_disabled")
+            ),
+            "generic_reply_disabled": bool(raw.get("generic_reply_disabled")),
+        }
+        pages: Dict[str, Dict[str, Any]] = {}
+        for k, v in raw.items():
+            if k in PAGE_REPLY_TOP_KEYS:
+                continue
+            if k == PLACEHOLDER_PAGE_NAME:
+                continue
+            if not isinstance(v, dict):
+                continue
+            pages[str(k)] = dict(v)
+        return {"globals": globals_out, "pages": pages, "raw": raw}
+
+    def save_page_reply_config(
+        self,
+        globals_in: Dict[str, Any],
+        page_name: Optional[str] = None,
+        page_fields: Optional[Dict[str, str]] = None,
+    ) -> None:
+        """Merge global flags and optionally one page's text fields. Keep other pages."""
+        self.ensure_seeded()
+        raw = self.load_json(self.page_reply_path, {})
+        if not isinstance(raw, dict):
+            raw = {}
+
+        out: Dict[str, Any] = dict(raw)
+        if "promo_send_after_hours" in out:
+            pass
+        else:
+            out["promo_send_after_hours"] = 6
+        if "promo_send_before_hours" not in out:
+            out["promo_send_before_hours"] = 23
+        out["promo_auto_send_disabled"] = bool(
+            globals_in.get("promo_auto_send_disabled")
+        )
+        out["messenger_auto_replies_disabled"] = bool(
+            globals_in.get("messenger_auto_replies_disabled")
+        )
+        out["generic_reply_disabled"] = bool(globals_in.get("generic_reply_disabled"))
+
+        name = (page_name or "").strip()
+        if name and name != PLACEHOLDER_PAGE_NAME and page_fields is not None:
+            existing = out.get(name)
+            if not isinstance(existing, dict):
+                existing = {}
+            merged = dict(existing)
+            for key in PAGE_REPLY_TEXT_KEYS:
+                if key in page_fields:
+                    merged[key] = str(page_fields.get(key) or "")
+            out[name] = merged
+
+        # Keep placeholder only if no real page keys besides top-level
+        self.save_json(self.page_reply_path, out)
+
+    # --- per-page media (product_images / promo_images) ---
+
+    @staticmethod
+    def _natural_sort_key(filename: str) -> List:
+        base = Path(filename).name
+        return [int(p) if p.isdigit() else p.lower() for p in re.split(r"(\d+)", base)]
+
+    def _safe_page_folder_name(self, page_name: str) -> str:
+        name = (page_name or "").strip()
+        if not name or name == PLACEHOLDER_PAGE_NAME:
+            raise ValueError("ยังไม่ได้เลือกเพจ")
+        if "/" in name or "\\" in name or name in (".", ".."):
+            raise ValueError("ชื่อเพจไม่ถูกต้อง")
+        return name
+
+    def page_media_dir(self, kind: str, page_name: str) -> Path:
+        kind = (kind or "").strip().lower()
+        if kind not in PAGE_MEDIA_KINDS:
+            raise ValueError(f"ชนิดสื่อไม่รู้จัก: {kind}")
+        folder = "product_images" if kind == "welcome" else "promo_images"
+        return self.root / folder / self._safe_page_folder_name(page_name)
+
+    def list_page_media(self, kind: str, page_name: str) -> List[Dict[str, str]]:
+        """Return files in send order: [{name, kind, path}, ...] kind=image|video."""
+        folder = self.page_media_dir(kind, page_name)
+        if not folder.is_dir():
+            return []
+        rows: List[Dict[str, str]] = []
+        names = sorted(
+            (p.name for p in folder.iterdir() if p.is_file()),
+            key=self._natural_sort_key,
+        )
+        for name in names:
+            ext = Path(name).suffix.lower()
+            if ext in PAGE_MEDIA_IMAGE_EXT:
+                mkind = "image"
+            elif ext in PAGE_MEDIA_VIDEO_EXT:
+                mkind = "video"
+            else:
+                continue
+            rows.append(
+                {
+                    "name": name,
+                    "kind": mkind,
+                    "path": str(folder / name),
+                }
+            )
+        return rows
+
+    def _next_media_index(self, folder: Path) -> int:
+        highest = 0
+        if folder.is_dir():
+            for p in folder.iterdir():
+                if not p.is_file():
+                    continue
+                m = re.match(r"^(\d+)", p.stem)
+                if m:
+                    highest = max(highest, int(m.group(1)))
+        return highest + 1
+
+    def add_page_media(
+        self, kind: str, page_name: str, source_paths: List[Path]
+    ) -> List[str]:
+        """Copy sources into the page folder as 01.ext, 02.ext, ... Return dest names."""
+        folder = self.page_media_dir(kind, page_name)
+        folder.mkdir(parents=True, exist_ok=True)
+        added: List[str] = []
+        idx = self._next_media_index(folder)
+        for src in source_paths:
+            src = Path(src)
+            if not src.is_file():
+                continue
+            ext = src.suffix.lower()
+            if ext not in PAGE_MEDIA_ALL_EXT:
+                continue
+            dest_name = f"{idx:02d}{ext}"
+            dest = folder / dest_name
+            while dest.exists():
+                idx += 1
+                dest_name = f"{idx:02d}{ext}"
+                dest = folder / dest_name
+            shutil.copy2(src, dest)
+            added.append(dest_name)
+            idx += 1
+        if not added:
+            raise ValueError("ไม่มีไฟล์รูป/วิดีโอที่รองรับ")
+        return added
+
+    def delete_page_media(
+        self, kind: str, page_name: str, filenames: List[str]
+    ) -> int:
+        folder = self.page_media_dir(kind, page_name)
+        deleted = 0
+        for raw in filenames:
+            name = Path(raw).name
+            if not name or name in (".", ".."):
+                continue
+            path = folder / name
+            try:
+                resolved = path.resolve()
+                folder_resolved = folder.resolve()
+            except OSError:
+                continue
+            if resolved.parent != folder_resolved:
+                continue
+            if path.is_file():
+                path.unlink()
+                deleted += 1
+        return deleted
+
     # --- setup status ---
 
     @staticmethod
@@ -460,6 +737,17 @@ class ConfigIO:
                 self.env_path.is_file(),
                 ".env มีไฟล์แล้ว",
                 critical=True,
+            )
+        )
+
+        has_anousith = bool((env.get("ANOUSITH_USER") or "").strip())
+        has_hal = bool((env.get("HAL_USER") or "").strip())
+        items.append(
+            StatusItem(
+                "carrier",
+                has_anousith or has_hal,
+                "บัญชีขนส่ง Anousith/HAL ใน .env (ถ้าใช้ถ่ายบิล)",
+                critical=False,
             )
         )
 

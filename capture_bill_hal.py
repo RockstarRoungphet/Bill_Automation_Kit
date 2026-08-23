@@ -50,6 +50,26 @@ COL_Z_INDEX = 25
 HAL_OUTBOUND_LIST_URL = "https://www.halexpress.la/parcel/outbound"
 HAL_LOGIN_URL = "https://www.halexpress.la/login"
 HAL_BROWSER_PROFILE_DIR = SCRIPT_DIR / "hal_browser_profile"
+USER_SETTINGS_FILE = SCRIPT_DIR / "user_settings.json"
+
+
+def _hal_profile_dir() -> Path:
+    """HAL_USER_DATA_DIR env → user_settings.hal_user_data_dir → hal_browser_profile."""
+    env = (os.getenv("HAL_USER_DATA_DIR") or "").strip()
+    if env:
+        return Path(env).expanduser().resolve()
+    if USER_SETTINGS_FILE.is_file():
+        try:
+            data = json.loads(USER_SETTINGS_FILE.read_text(encoding="utf-8"))
+            raw = str((data or {}).get("hal_user_data_dir") or "").strip()
+            if raw:
+                p = Path(raw)
+                if not p.is_absolute():
+                    p = SCRIPT_DIR / p
+                return p.resolve()
+        except Exception:
+            pass
+    return HAL_BROWSER_PROFILE_DIR.resolve()
 
 
 def _load_dotenv(path: Path) -> None:
@@ -483,7 +503,7 @@ async def capture_many_png_async_parallel(
         return 0, [(tid, "playwright not installed") for tid in tracking_ids]
 
     list_url = os.getenv("HAL_OUTBOUND_LIST_URL", HAL_OUTBOUND_LIST_URL).strip() or HAL_OUTBOUND_LIST_URL
-    profile_dir = Path(os.getenv("HAL_USER_DATA_DIR", str(HAL_BROWSER_PROFILE_DIR)))
+    profile_dir = _hal_profile_dir()
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     parallel_pages = max(1, min(int(parallel_pages), DEFAULT_PARALLEL_PAGES))

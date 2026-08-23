@@ -23,8 +23,34 @@ except ImportError:
 PROJECT_DIR = Path(__file__).resolve().parent
 CAPTURE_SCRIPT = PROJECT_DIR / "capture_bill_screenshot.py"
 ICON_PATH = PROJECT_DIR / "no_api_send_bill_manual" / "send_bill.ico"
-# ຖ້າມີ auth.json ໃນໂຟນເດີໂປຣເຈັກ ຈະໃຊ້โหมดສ່ວນຕົວ (--private --storage-state) ເພື່ອຖ່າຍໄວ
+# ຖ້າມີ auth.json ຫຼື ANOUSITH_USER/PASSWORD ໃນ .env ຈະໃຊ້โหมดສ່ວນຕົວກ່ອນ
 AUTH_JSON = PROJECT_DIR / "auth.json"
+ENV_FILE = PROJECT_DIR / ".env"
+
+
+def _env_value(key: str) -> str:
+    val = (os.environ.get(key) or "").strip()
+    if val:
+        return val
+    if not ENV_FILE.is_file():
+        return ""
+    try:
+        for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            if k.strip() == key:
+                return v.strip().strip("'\"")
+    except Exception:
+        return ""
+    return ""
+
+
+def _anousith_can_use_private() -> bool:
+    if AUTH_JSON.is_file():
+        return True
+    return bool(_env_value("ANOUSITH_USER") and _env_value("ANOUSITH_PASSWORD"))
 
 
 def capture_worker(proc: subprocess.Popen, out_queue: queue.Queue):
@@ -56,15 +82,97 @@ def main():
     status_frame = ttk.LabelFrame(root, text="")
     status_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
     status_text = scrolledtext.ScrolledText(
-        status_frame, wrap=tk.WORD, height=16, font=("Consolas", 10), state=tk.DISABLED
+        status_frame,
+        wrap=tk.WORD,
+        height=16,
+        font=("Consolas", 10),
+        exportselection=True,
     )
     status_text.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
 
+    def _focus_is_editable() -> bool:
+        w = root.focus_get()
+        return w is not None and w is not status_text and w.winfo_class() in (
+            "Entry",
+            "TEntry",
+            "Text",
+            "TCombobox",
+        )
+
+    def copy_log(event=None):
+        if _focus_is_editable():
+            return None
+        try:
+            text = status_text.get("sel.first", "sel.last")
+        except tk.TclError:
+            text = ""
+        if not text:
+            return None
+        root.clipboard_clear()
+        root.clipboard_append(text)
+        return "break"
+
+    def select_all_log(event=None):
+        if _focus_is_editable():
+            return None
+        status_text.tag_add("sel", "1.0", "end-1c")
+        status_text.mark_set(tk.INSERT, "1.0")
+        return "break"
+
+    def _block_log_edit(event):
+        ctrl = bool(event.state & 0x4)
+        vk = int(getattr(event, "keycode", 0) or 0)
+        ch = event.char or ""
+        if ctrl and (ch == "\x01" or vk == 65):
+            return select_all_log(event)
+        if ctrl and (ch == "\x03" or vk == 67):
+            return copy_log(event)
+        if not ctrl and event.keysym not in (
+            "Left",
+            "Right",
+            "Up",
+            "Down",
+            "Home",
+            "End",
+            "Prior",
+            "Next",
+            "Shift_L",
+            "Shift_R",
+            "Control_L",
+            "Control_R",
+            "Alt_L",
+            "Alt_R",
+        ):
+            return "break"
+        return None
+
+    status_text.bind("<Key>", _block_log_edit)
+    status_text.bind("<<Paste>>", lambda e: "break")
+    status_text.bind("<<Cut>>", lambda e: "break")
+
+    for seq in ("<Control-c>", "<Control-C>", "<Control-Insert>"):
+        status_text.bind(seq, copy_log)
+        root.bind_all(seq, copy_log, add="+")
+    for seq in ("<Control-a>", "<Control-A>"):
+        status_text.bind(seq, select_all_log)
+        root.bind_all(seq, select_all_log, add="+")
+
+    log_menu = tk.Menu(status_text, tearoff=0)
+    log_menu.add_command(label="Copy", command=lambda: copy_log())
+    log_menu.add_command(label="Select all", command=select_all_log)
+
+    def show_log_menu(event):
+        try:
+            log_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            log_menu.grab_release()
+        return "break"
+
+    status_text.bind("<Button-3>", show_log_menu)
+
     def append_status(msg: str):
-        status_text.configure(state=tk.NORMAL)
         status_text.insert(tk.END, msg)
         status_text.see(tk.END)
-        status_text.configure(state=tk.DISABLED)
 
     def poll_queue():
         try:
@@ -88,11 +196,17 @@ def main():
             return
         append_status("\n--- ເລີ່ມຖ່າຍຮູບບິນຈາກ Google Sheet ---\n")
         cmd = [sys.executable, "-u", str(CAPTURE_SCRIPT)]
-        if AUTH_JSON.is_file():
-            cmd.extend(["--private", "--storage-state", str(AUTH_JSON)])
-            append_status("โหมด: ໜ້າສ່ວນຕົວ (ໄວ — ໃຊ້ auth.json)\n")
+        if _anousith_can_use_private():
+            cmd.append("--private")
+            if AUTH_JSON.is_file():
+                cmd.extend(["--storage-state", str(AUTH_JSON)])
+                append_status("โหมด: ໜ້າສ່ວນຕົວ (auth.json)\n")
+            else:
+                append_status("โหมด: ໜ້າສ່ວນຕົວ (auto-login จาก .env)\n")
         else:
-            append_status("โหมด: ໜ້າສາທາລະນະ (ທີ່ລະບິນ — ຖ້າຕ້ອງການໄວ ວາງ auth.json ໄວ້ໃນໂຟນເດີໂປຣເຈັກ)\n")
+            append_status(
+                "โหมด: ໜ້າສາທາລະນະ — ยังไม่มี auth.json และยังไม่ตั้ง ANOUSITH_USER/PASSWORD\n"
+            )
         try:
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"

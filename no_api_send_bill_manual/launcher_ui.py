@@ -21,6 +21,7 @@ except ImportError:
 PROJECT_DIR = Path(__file__).resolve().parent
 RUN_MANUAL = PROJECT_DIR / "run_manual.py"
 AHK_SCRIPT = PROJECT_DIR / "send_bill_signal.ahk"
+ICON_PATH = PROJECT_DIR / "send_bill.ico"
 
 # ສ່ວນຂອງຖ່າຍຮູບບິນ (capture_bill_screenshot.py) ຢູ່ໂຟນເດີແມ່ (Testing / send_bill)
 PROJECT_ROOT = PROJECT_DIR.parent
@@ -38,6 +39,42 @@ except ImportError:
 CAPTURE_SCRIPT = PROJECT_ROOT / "capture_bill_screenshot.py"
 HAL_CAPTURE_SCRIPT = PROJECT_ROOT / "capture_bill_hal.py"
 AUTH_JSON = PROJECT_ROOT / "auth.json"
+ENV_FILE = PROJECT_ROOT / ".env"
+
+
+def _env_value(key: str) -> str:
+    val = (os.environ.get(key) or "").strip()
+    if val:
+        return val
+    if not ENV_FILE.is_file():
+        return ""
+    try:
+        for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            if k.strip() == key:
+                return v.strip().strip("'\"")
+    except Exception:
+        return ""
+    return ""
+
+
+def _anousith_private_cmd_args() -> list:
+    """Always prefer private Anousith capture when session or .env login exists."""
+    args = ["--private"]
+    if AUTH_JSON.is_file():
+        args.extend(["--storage-state", str(AUTH_JSON)])
+    return args
+
+
+def _anousith_can_use_private() -> bool:
+    if AUTH_JSON.is_file():
+        return True
+    return bool(_env_value("ANOUSITH_USER") and _env_value("ANOUSITH_PASSWORD"))
+
+
 WINDOWS_SCRIPTS_DIR = PROJECT_ROOT / "scripts" / "windows"
 AUTO_CLEANUP_INSTALLER = WINDOWS_SCRIPTS_DIR / "install_monthly_cleanup_task.ps1"
 AUTO_CLEANUP_TASK_NAME = "Cleanup bill_images monthly"
@@ -51,6 +88,29 @@ WEBHOOK_SCRIPT = PROJECT_ROOT / "messenger_webhook_server.py"
 SEND_BILL_API_SCRIPT = PROJECT_ROOT / "send_bill_from_sheet.py"
 NGROK_EXE = PROJECT_ROOT / "ngrok.exe"
 USER_SETTINGS_FILE = PROJECT_ROOT / "user_settings.json"
+DEFAULT_FB_PROFILE = "no_api_send_bill/browser_profile"
+
+
+def _facebook_user_data_dir() -> Path:
+    """Resolve Facebook Playwright profile from user_settings.json."""
+    if USER_SETTINGS_FILE.is_file():
+        try:
+            import json
+
+            data = json.loads(USER_SETTINGS_FILE.read_text(encoding="utf-8"))
+            raw = str((data or {}).get("facebook_user_data_dir") or "").strip()
+            if raw:
+                p = Path(raw)
+                if not p.is_absolute():
+                    p = PROJECT_ROOT / p
+                return p.resolve()
+        except Exception:
+            pass
+    return (PROJECT_ROOT / DEFAULT_FB_PROFILE).resolve()
+
+
+def _no_api_user_data_args() -> list:
+    return ["--user-data-dir", str(_facebook_user_data_dir())]
 
 
 def _load_ngrok_domain() -> str:
@@ -76,14 +136,116 @@ def _load_ngrok_domain() -> str:
 NGROK_DOMAIN = _load_ngrok_domain()
 
 
+def _win_user_path_dirs() -> list[Path]:
+    """User PATH from the registry — Explorer/pythonw often miss newly installed tools."""
+    dirs: list[Path] = []
+    if sys.platform != "win32":
+        return dirs
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            raw, _ = winreg.QueryValueEx(key, "Path")
+        for part in str(raw or "").split(";"):
+            part = part.strip()
+            if part:
+                dirs.append(Path(os.path.expandvars(part)))
+    except Exception:
+        pass
+    return dirs
+
+
+def _ngrok_candidate_files() -> list[Path]:
+    local = Path(os.environ.get("LOCALAPPDATA") or "")
+    home = Path.home()
+    pf = Path(os.environ.get("ProgramFiles") or r"C:\Program Files")
+    out: list[Path] = [
+        NGROK_EXE,
+        local / "ngrok" / "ngrok.exe",
+        local / "Microsoft" / "WinGet" / "Links" / "ngrok.exe",
+        pf / "ngrok" / "ngrok.exe",
+        home / "Desktop" / "ngrok.exe",
+        home / "OneDrive" / "Desktop" / "ngrok.exe",
+    ]
+    pkg = local / "Microsoft" / "WinGet" / "Packages"
+    if pkg.is_dir():
+        try:
+            out.extend(pkg.glob("**/ngrok.exe"))
+        except Exception:
+            pass
+    for d in _win_user_path_dirs():
+        out.append(d / "ngrok.exe")
+        out.append(d / "ngrok")
+    return out
+
+
+def _shortcut_target(lnk: Path) -> Path | None:
+    if sys.platform != "win32" or not lnk.is_file():
+        return None
+    try:
+        escaped = str(lnk).replace("'", "''")
+        ps = (
+            f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{escaped}');"
+            "Write-Output $s.TargetPath"
+        )
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        target = (r.stdout or "").strip().strip('"')
+        if target:
+            p = Path(target)
+            if p.is_file():
+                return p
+    except Exception:
+        return None
+    return None
+
+
 def _resolve_ngrok_executable() -> Path | None:
-    """Prefer repo-root ngrok.exe (gitignored); else ngrok on PATH (e.g. winget)."""
-    if NGROK_EXE.is_file():
-        return NGROK_EXE
+    """Find ngrok even when Desktop-launched pythonw has a stale PATH."""
+    seen: set[str] = set()
+
+    def _ok(p: Path | None) -> Path | None:
+        if p is None:
+            return None
+        try:
+            resolved = p.resolve()
+        except Exception:
+            return None
+        if not resolved.is_file():
+            return None
+        key = str(resolved).lower()
+        if key in seen:
+            return None
+        seen.add(key)
+        return resolved
+
+    hit = _ok(NGROK_EXE)
+    if hit:
+        return hit
     for name in ("ngrok.exe", "ngrok"):
         found = shutil.which(name)
-        if found:
-            return Path(found)
+        hit = _ok(Path(found) if found else None)
+        if hit:
+            return hit
+    for cand in _ngrok_candidate_files():
+        hit = _ok(cand)
+        if hit:
+            return hit
+    for desktop in (Path.home() / "Desktop", Path.home() / "OneDrive" / "Desktop"):
+        if not desktop.is_dir():
+            continue
+        try:
+            for lnk in desktop.glob("*ngrok*.lnk"):
+                hit = _ok(_shortcut_target(lnk))
+                if hit:
+                    return hit
+        except Exception:
+            continue
     return None
 
 
@@ -205,6 +367,33 @@ def capture_all_worker(commands, cwd: Path, env: dict, out_queue: queue.Queue):
     out_queue.put(("capture_all", None))
 
 
+def pipeline_worker(steps, env: dict, out_queue: queue.Queue, source: str = "pipeline"):
+    """Run titled commands in order and stream logs. Continue after a step fails."""
+    creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    try:
+        for title, cmd, cwd in steps:
+            out_queue.put((source, f"\n=== {title} ===\n"))
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(cwd),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                bufsize=1,
+                env=env,
+                creationflags=creation_flags,
+            )
+            for line in proc.stdout:
+                out_queue.put((source, line.decode("utf-8", errors="replace")))
+            proc.wait()
+            if proc.returncode != 0:
+                out_queue.put(
+                    (source, f"❌ {title} ไม่สำเร็จ (exit {proc.returncode})\n")
+                )
+    except Exception as e:
+        out_queue.put((source, f"❌ Pipeline error: {e}\n"))
+    out_queue.put((source, None))
+
+
 def no_api_worker(proc: subprocess.Popen, out_queue: queue.Queue):
     """อ่าน stdout/stderr จาก open_inbox_and_send.py (no_api_send_bill) แล้วใส่ใน queue"""
     try:
@@ -273,16 +462,23 @@ def main():
     process_ref = {
         "proc": None, "ahk": None,
         "capture_all": None,
+        "pipeline": None,
         "no_api": None, "no_api_notify": None, "no_api_stock_out": None, "no_api_stock_available": None,
         "webhook": None, "ngrok": None,
         "api_bill": None, "api_notify": None, "api_stock_out": None, "api_stock_available": None,
     }
+    action_buttons: list = []
 
     root = tk.Tk()
     root.title("ໜ້າຕ່າງຄວບຄຸມ")
     root.minsize(680, 460)
     root.geometry("720x500")
     root.configure(bg="white")
+    if sys.platform == "win32" and ICON_PATH.is_file():
+        try:
+            root.iconbitmap(str(ICON_PATH))
+        except Exception:
+            pass
 
     style = ttk.Style(root)
     try:
@@ -306,16 +502,96 @@ def main():
         wrap=tk.WORD,
         height=14,
         font=("Consolas", 10),
-        state=tk.DISABLED,
         bg="white",
         relief=tk.SOLID,
         borderwidth=1,
         highlightthickness=0,
+        exportselection=True,
     )
     status_text.pack(fill=tk.BOTH, expand=True)
 
+    def _focus_is_editable() -> bool:
+        w = root.focus_get()
+        return w is not None and w is not status_text and w.winfo_class() in (
+            "Entry",
+            "TEntry",
+            "Text",
+            "TCombobox",
+        )
+
+    def _block_log_edit(event):
+        ctrl = bool(event.state & 0x4)
+        vk = int(getattr(event, "keycode", 0) or 0)
+        ch = event.char or ""
+        # IME (Hangul/Thai/Lao) reports keysym Hangul_* instead of a/c; use virtual-key / control char.
+        if ctrl and (ch == "\x01" or vk == 65):
+            return select_all_log(event)
+        if ctrl and (ch == "\x03" or vk == 67):
+            return copy_log(event)
+        if not ctrl and event.keysym not in (
+            "Left",
+            "Right",
+            "Up",
+            "Down",
+            "Home",
+            "End",
+            "Prior",
+            "Next",
+            "Shift_L",
+            "Shift_R",
+            "Control_L",
+            "Control_R",
+            "Alt_L",
+            "Alt_R",
+        ):
+            return "break"
+        return None
+
+    def copy_log(event=None):
+        if _focus_is_editable():
+            return None
+        try:
+            text = status_text.get("sel.first", "sel.last")
+        except tk.TclError:
+            text = ""
+        if not text:
+            return None
+        root.clipboard_clear()
+        root.clipboard_append(text)
+        return "break"
+
+    def select_all_log(event=None):
+        if _focus_is_editable():
+            return None
+        status_text.tag_add("sel", "1.0", "end-1c")
+        status_text.mark_set(tk.INSERT, "1.0")
+        return "break"
+
+    status_text.bind("<Key>", _block_log_edit)
+    status_text.bind("<<Paste>>", lambda e: "break")
+    status_text.bind("<<Cut>>", lambda e: "break")
+
+    for seq in ("<Control-c>", "<Control-C>", "<Control-Insert>"):
+        status_text.bind(seq, copy_log)
+        root.bind_all(seq, copy_log, add="+")
+    for seq in ("<Control-a>", "<Control-A>"):
+        status_text.bind(seq, select_all_log)
+        root.bind_all(seq, select_all_log, add="+")
+
+    log_menu = tk.Menu(status_text, tearoff=0)
+    log_menu.add_command(label="Copy", command=lambda: copy_log())
+    log_menu.add_command(label="Select all", command=select_all_log)
+
+    def show_log_menu(event):
+        try:
+            log_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            log_menu.grab_release()
+        return "break"
+
+    status_text.bind("<Button-3>", show_log_menu)
+
     def append_status(msg: str):
-        status_text.configure(state=tk.NORMAL)
         # Progress lines (e.g. "ถ่ายได้ N/Total รายการ") should not spam new lines in UI.
         # Terminal \r is unreliable inside a Tkinter text widget, so we replace the last
         # progress line instead of appending.
@@ -336,7 +612,6 @@ def main():
                     pass
             status_text.insert(tk.END, part)
         status_text.see(tk.END)
-        status_text.configure(state=tk.DISABLED)
 
     def poll_queue():
         try:
@@ -347,38 +622,20 @@ def main():
                         btn_helper.config(state=tk.NORMAL)
                         process_ref["proc"] = None
                     elif source == "capture_all":
-                        btn_capture_all.config(state=tk.NORMAL)
                         process_ref["capture_all"] = None
-                    elif source == "no_api":
-                        btn_no_api.config(state=tk.NORMAL)
-                        process_ref["no_api"] = None
-                    elif source == "no_api_notify":
-                        btn_no_api_notify.config(state=tk.NORMAL)
-                        process_ref["no_api_notify"] = None
-                    elif source == "no_api_stock_out":
-                        btn_no_api_stock_out.config(state=tk.NORMAL)
-                        process_ref["no_api_stock_out"] = None
-                    elif source == "no_api_stock_available":
-                        btn_no_api_stock_available.config(state=tk.NORMAL)
-                        process_ref["no_api_stock_available"] = None
+                    elif source == "pipeline":
+                        process_ref["pipeline"] = None
+                        for b in action_buttons:
+                            try:
+                                b.config(state=tk.NORMAL)
+                            except Exception:
+                                pass
                     elif source == "webhook":
                         process_ref["webhook"] = None
                         _check_webhook_stopped()
                     elif source == "ngrok":
                         process_ref["ngrok"] = None
                         _check_webhook_stopped()
-                    elif source == "api_bill":
-                        btn_api_bill.config(state=tk.NORMAL)
-                        process_ref["api_bill"] = None
-                    elif source == "api_notify":
-                        btn_api_notify.config(state=tk.NORMAL)
-                        process_ref["api_notify"] = None
-                    elif source == "api_stock_out":
-                        btn_api_stock_out.config(state=tk.NORMAL)
-                        process_ref["api_stock_out"] = None
-                    elif source == "api_stock_available":
-                        btn_api_stock_available.config(state=tk.NORMAL)
-                        process_ref["api_stock_available"] = None
                     continue
                 # Keep raw output; scripts may stream progress updates intentionally.
                 append_status(line)
@@ -442,6 +699,85 @@ def main():
         run_run_manual()
         run_ahk()
 
+    def _set_action_buttons(state) -> None:
+        for b in action_buttons:
+            try:
+                b.config(state=state)
+            except Exception:
+                pass
+
+    def _capture_pipeline_steps():
+        python_exec = _get_python_for_capture()
+        anousith_cmd = [python_exec, "-u", str(CAPTURE_SCRIPT)]
+        if _anousith_can_use_private():
+            anousith_cmd.extend(_anousith_private_cmd_args())
+        hal_cmd = [python_exec, "-u", str(HAL_CAPTURE_SCRIPT), "--parallel-pages", "10"]
+        return [
+            ("Capture Anousith", anousith_cmd, PROJECT_ROOT),
+            ("Capture HAL", hal_cmd, PROJECT_ROOT),
+        ]
+
+    def _start_pipeline(label: str, steps) -> None:
+        if process_ref["pipeline"] is not None:
+            messagebox.showinfo("ແຈ້ງ", "ກຳລັງຮັນຢູ່ແລ້ວ")
+            return
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        process_ref["pipeline"] = True
+        _set_action_buttons(tk.DISABLED)
+        append_status(f"\n{label}\n")
+        threading.Thread(
+            target=pipeline_worker,
+            args=(steps, env, out_queue, "pipeline"),
+            daemon=True,
+        ).start()
+
+    def run_send_bill():
+        if not CAPTURE_SCRIPT.is_file() or not HAL_CAPTURE_SCRIPT.is_file():
+            messagebox.showerror("ຜິດພາດ", f"ບໍ່ພົບໄຟລ໌ຖ່າຍບິນ")
+            return
+        if not SEND_BILL_API_SCRIPT.is_file() or not NO_API_SCRIPT.is_file():
+            messagebox.showerror("ຜິດພາດ", "ບໍ່ພົບສະຄຣິບສົ່ງບິນ")
+            return
+        api_py = _get_python_for_api()
+        pw_py = _get_python_for_no_api()
+        steps = _capture_pipeline_steps() + [
+            (
+                "Token ສົ່ງບິນ",
+                [api_py, "-u", str(SEND_BILL_API_SCRIPT), "--sheet"],
+                PROJECT_ROOT,
+            ),
+            (
+                "Playwright ສົ່ງບິນ",
+                [pw_py, "-u", str(NO_API_SCRIPT), "--sheet"] + _no_api_user_data_args(),
+                NO_API_SEND_BILL_DIR,
+            ),
+        ]
+        _start_pipeline(
+            "ເລີ່ມສົ່ງບິນ: ຖ່າຍຮູບ → Token → Playwright (ລາຍການທີ່ Token ສົ່ງບໍ່ໄດ້)",
+            steps,
+        )
+
+    def run_notify_pipeline(kind: str, token_flag: str, pw_flag: str, title: str) -> None:
+        if not SEND_BILL_API_SCRIPT.is_file() or not NO_API_SCRIPT.is_file():
+            messagebox.showerror("ຜິດພາດ", "ບໍ່ພົບສະຄຣິບແຈ້ງ")
+            return
+        api_py = _get_python_for_api()
+        pw_py = _get_python_for_no_api()
+        steps = [
+            (
+                f"Token {title}",
+                [api_py, "-u", str(SEND_BILL_API_SCRIPT), "--sheet", token_flag],
+                PROJECT_ROOT,
+            ),
+            (
+                f"Playwright {title}",
+                [pw_py, "-u", str(NO_API_SCRIPT), "--sheet", pw_flag] + _no_api_user_data_args(),
+                NO_API_SEND_BILL_DIR,
+            ),
+        ]
+        _start_pipeline(f"ເລີ່ມ{title}: Token → Playwright", steps)
+
     def run_capture_all():
         """Run Anousith + HAL capture sequentially with one click."""
         if process_ref["capture_all"] is not None:
@@ -459,11 +795,16 @@ def main():
         python_exec = _get_python_for_capture()
 
         anousith_cmd = [python_exec, "-u", str(CAPTURE_SCRIPT)]
-        if AUTH_JSON.is_file():
-            anousith_cmd.extend(["--private", "--storage-state", str(AUTH_JSON)])
-            append_status("Anousith mode: private + auth.json (fast)\n")
+        if _anousith_can_use_private():
+            anousith_cmd.extend(_anousith_private_cmd_args())
+            if AUTH_JSON.is_file():
+                append_status("Anousith mode: private + auth.json\n")
+            else:
+                append_status("Anousith mode: private + auto-login จาก .env\n")
         else:
-            append_status("Anousith mode: public\n")
+            append_status(
+                "Anousith mode: public — ยังไม่มี auth.json และยังไม่ตั้ง ANOUSITH_USER/PASSWORD\n"
+            )
 
         hal_cmd = [python_exec, "-u", str(HAL_CAPTURE_SCRIPT), "--parallel-pages", "10"]
         append_status("HAL mode: auto-login + PNG only (parallel pages: 10)\n")
@@ -496,7 +837,7 @@ def main():
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
             python_exec = _get_python_for_no_api()
-            cmd = [python_exec, "-u", str(NO_API_SCRIPT), "--sheet"]
+            cmd = [python_exec, "-u", str(NO_API_SCRIPT), "--sheet"] + _no_api_user_data_args()
             creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             proc = subprocess.Popen(
                 cmd,
@@ -529,7 +870,13 @@ def main():
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
             python_exec = _get_python_for_no_api()
-            cmd = [python_exec, "-u", str(NO_API_SCRIPT), "--sheet", "--notify-delivered"]
+            cmd = [
+                python_exec,
+                "-u",
+                str(NO_API_SCRIPT),
+                "--sheet",
+                "--notify-delivered",
+            ] + _no_api_user_data_args()
             creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             proc = subprocess.Popen(
                 cmd,
@@ -562,7 +909,13 @@ def main():
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
             python_exec = _get_python_for_no_api()
-            cmd = [python_exec, "-u", str(NO_API_SCRIPT), "--sheet", "--notify-stock-out"]
+            cmd = [
+                python_exec,
+                "-u",
+                str(NO_API_SCRIPT),
+                "--sheet",
+                "--notify-stock-out",
+            ] + _no_api_user_data_args()
             creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             proc = subprocess.Popen(
                 cmd,
@@ -595,7 +948,13 @@ def main():
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
             python_exec = _get_python_for_no_api()
-            cmd = [python_exec, "-u", str(NO_API_SCRIPT), "--sheet", "--notify-stock-available"]
+            cmd = [
+                python_exec,
+                "-u",
+                str(NO_API_SCRIPT),
+                "--sheet",
+                "--notify-stock-available",
+            ] + _no_api_user_data_args()
             creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             proc = subprocess.Popen(
                 cmd,
@@ -644,9 +1003,15 @@ def main():
             return
         ngrok_exe = _resolve_ngrok_executable()
         if ngrok_exe is None:
+            local_hint = Path(os.environ.get("LOCALAPPDATA") or "") / "ngrok" / "ngrok.exe"
             messagebox.showerror(
                 "ຜິດພາດ",
-                f"ບໍ່ພົບ ngrok — ວາງ {NGROK_EXE} ຫຼື ຕິດຕັ້ງ ngrok ໃຫ້ຢູ່ PATH (winget install ngrok.ngrok)",
+                "ບໍ່ພົບ ngrok\n\n"
+                f"ວາງ ngrok.exe ທີ່:\n{NGROK_EXE}\n"
+                f"ຫຼື {local_hint}\n"
+                "ຫຼືໄອຄອນ Desktop ຊື່ ngrok\n\n"
+                "ຫຼືຕິດຕັ້ງ: winget install ngrok.ngrok\n"
+                "ຫຼືຮັນ INSTALL.bat ອີກຄັ້ງ (ຈະພະຍາຍາມຕິດຕັ້ງ ngrok ໃຫ້)",
             )
             return
 
@@ -989,52 +1354,65 @@ def main():
             )
             open_settings()
 
-    # แถว Settings
+    # แถว Settings + webhook
     lbl0 = ttk.Label(root, text="Setup:", font=("", 9, "bold"))
     lbl0.pack(anchor=tk.W, padx=10, pady=(6, 0))
     btn_frame0 = ttk.Frame(root)
     btn_frame0.pack(fill=tk.X, padx=8, pady=2)
     btn_settings = ttk.Button(btn_frame0, text="Settings…", command=open_settings)
     btn_settings.pack(side=tk.LEFT, padx=(0, 8))
+    btn_webhook = ttk.Button(btn_frame0, text="ເລີ່ມ Webhook + ngrok", command=toggle_webhook)
+    btn_webhook.pack(side=tk.LEFT, padx=(0, 8))
     ttk.Label(
         btn_frame0,
         text="Sheet / เพจ·Token / Webhook·ngrok",
         foreground="#555",
     ).pack(side=tk.LEFT)
 
-    # ປຸ່ມແຖວ 1: Browser-based (Playwright / Manual)
-    lbl1 = ttk.Label(root, text="Browser (Playwright):", font=("", 9, "bold"))
+    # ປຸ່ມສົ່ງ/ແຈ້ງ — Token ກ່ອນ ແລ້ວ Playwright (ປຸ່ມສົ່ງບິນຖ່າຍຮູບກ່ອນ)
+    lbl1 = ttk.Label(root, text="ສົ່ງ / ແຈ້ງ:", font=("", 9, "bold"))
     lbl1.pack(anchor=tk.W, padx=10, pady=(6, 0))
     btn_frame = ttk.Frame(root)
     btn_frame.pack(fill=tk.X, padx=8, pady=2)
     btn_helper = ttk.Button(btn_frame, text="ຕົວຊ່ວຍສົ່ງບິນ", command=run_helper)
     btn_helper.pack(side=tk.LEFT, padx=(0, 8))
-    btn_capture_all = ttk.Button(btn_frame, text="ຖ່າຍຮູບບິນ", command=run_capture_all)
-    btn_capture_all.pack(side=tk.LEFT, padx=(0, 8))
-    btn_no_api = ttk.Button(btn_frame, text="ສົ່ງບິນ", command=run_no_api_send_bill)
-    btn_no_api.pack(side=tk.LEFT, padx=(0, 8))
-    btn_no_api_notify = ttk.Button(btn_frame, text="ແຈ້ງຮອດແລ້ວ", command=run_no_api_notify_delivered)
-    btn_no_api_notify.pack(side=tk.LEFT, padx=(0, 8))
-    btn_no_api_stock_out = ttk.Button(btn_frame, text="ແຈ້ງສິນຄ້າໝົດ", command=run_no_api_notify_stock_out)
-    btn_no_api_stock_out.pack(side=tk.LEFT, padx=(0, 8))
-    btn_no_api_stock_available = ttk.Button(btn_frame, text="ແຈ້ງມີສິນຄ້າ", command=run_no_api_notify_stock_available)
-    btn_no_api_stock_available.pack(side=tk.LEFT)
-
-    # ປຸ່ມແຖວ 2: API-based (Token)
-    lbl2 = ttk.Label(root, text="API (Token):", font=("", 9, "bold"))
-    lbl2.pack(anchor=tk.W, padx=10, pady=(8, 0))
-    btn_frame2 = ttk.Frame(root)
-    btn_frame2.pack(fill=tk.X, padx=8, pady=2)
-    btn_webhook = ttk.Button(btn_frame2, text="ເລີ່ມ Webhook + ngrok", command=toggle_webhook)
-    btn_webhook.pack(side=tk.LEFT, padx=(0, 8))
-    btn_api_bill = ttk.Button(btn_frame2, text="ສົ່ງບິນ (Token)", command=run_api_send_bill)
-    btn_api_bill.pack(side=tk.LEFT, padx=(0, 8))
-    btn_api_notify = ttk.Button(btn_frame2, text="ແຈ້ງຮອດແລ້ວ (Token)", command=run_api_notify_delivered)
-    btn_api_notify.pack(side=tk.LEFT, padx=(0, 8))
-    btn_api_stock_out = ttk.Button(btn_frame2, text="ແຈ້ງສິນຄ້າໝົດ (Token)", command=run_api_notify_stock_out)
-    btn_api_stock_out.pack(side=tk.LEFT, padx=(0, 8))
-    btn_api_stock_available = ttk.Button(btn_frame2, text="ແຈ້ງມີສິນຄ້າ (Token)", command=run_api_notify_stock_available)
-    btn_api_stock_available.pack(side=tk.LEFT)
+    btn_send_bill = ttk.Button(btn_frame, text="ສົ່ງບິນ", command=run_send_bill)
+    btn_send_bill.pack(side=tk.LEFT, padx=(0, 8))
+    btn_notify_delivered = ttk.Button(
+        btn_frame,
+        text="ແຈ້ງຮອດແລ້ວ",
+        command=lambda: run_notify_pipeline(
+            "delivered", "--notify-delivered", "--notify-delivered", "ແຈ້ງຮອດແລ້ວ"
+        ),
+    )
+    btn_notify_delivered.pack(side=tk.LEFT, padx=(0, 8))
+    btn_notify_stock_out = ttk.Button(
+        btn_frame,
+        text="ແຈ້ງສິນຄ້າໝົດ",
+        command=lambda: run_notify_pipeline(
+            "stock_out", "--notify-stock-out", "--notify-stock-out", "ແຈ້ງສິນຄ້າໝົດ"
+        ),
+    )
+    btn_notify_stock_out.pack(side=tk.LEFT, padx=(0, 8))
+    btn_notify_stock_available = ttk.Button(
+        btn_frame,
+        text="ແຈ້ງມີສິນຄ້າ",
+        command=lambda: run_notify_pipeline(
+            "stock_available",
+            "--notify-stock-available",
+            "--notify-stock-available",
+            "ແຈ້ງມີສິນຄ້າ",
+        ),
+    )
+    btn_notify_stock_available.pack(side=tk.LEFT)
+    action_buttons.extend(
+        [
+            btn_send_bill,
+            btn_notify_delivered,
+            btn_notify_stock_out,
+            btn_notify_stock_available,
+        ]
+    )
 
     # ປຸ່ມແຖວ 3: Auto cleanup bill_images
     lbl3 = ttk.Label(root, text="Maintenance:", font=("", 9, "bold"))

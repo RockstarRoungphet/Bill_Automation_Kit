@@ -130,6 +130,97 @@ function Install-PlaywrightChromium([string]$VenvPython) {
     & $VenvPython -m playwright install chromium
 }
 
+function Find-NgrokExe {
+    Refresh-PathEnv
+    $cmd = Get-Command ngrok -ErrorAction SilentlyContinue
+    if ($cmd -and $cmd.Source -and (Test-Path $cmd.Source)) {
+        return $cmd.Source
+    }
+    $candidates = @(
+        (Join-Path $ProjectRoot "ngrok.exe"),
+        "$env:LOCALAPPDATA\ngrok\ngrok.exe",
+        "$env:LOCALAPPDATA\Microsoft\WinGet\Links\ngrok.exe",
+        "$env:ProgramFiles\ngrok\ngrok.exe",
+        "$env:USERPROFILE\Desktop\ngrok.exe",
+        "$env:USERPROFILE\OneDrive\Desktop\ngrok.exe"
+    )
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path -LiteralPath $c)) {
+            return (Resolve-Path -LiteralPath $c).Path
+        }
+    }
+    $pkgRoot = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages"
+    if (Test-Path $pkgRoot) {
+        $found = Get-ChildItem -Path $pkgRoot -Recurse -Filter ngrok.exe -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($found) { return $found.FullName }
+    }
+    return $null
+}
+
+function Install-NgrokFromZip {
+    $stableDir = Join-Path $env:LOCALAPPDATA "ngrok"
+    $stable = Join-Path $stableDir "ngrok.exe"
+    if (Test-Path -LiteralPath $stable) { return $stable }
+    $url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
+    $zip = Join-Path $env:TEMP "ngrok-stable.zip"
+    Write-Host "  Downloading ngrok zip to $stableDir ..."
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+        New-Item -ItemType Directory -Force -Path $stableDir | Out-Null
+        Expand-Archive -Path $zip -DestinationPath $stableDir -Force
+        if (Test-Path -LiteralPath $stable) { return $stable }
+        Write-Warn "Zip extracted but ngrok.exe missing in $stableDir"
+    } catch {
+        Write-Warn "ngrok zip download failed: $_"
+    }
+    return $null
+}
+
+function Install-NgrokIfMissing {
+    $exe = Find-NgrokExe
+    if (-not $exe -and $InstallPrerequisites) {
+        Write-Host "  Installing ngrok via winget..."
+        $ok = Try-WingetInstall "Ngrok.Ngrok" "ngrok"
+        if (-not $ok) { $ok = Try-WingetInstall "ngrok.ngrok" "ngrok" }
+        Refresh-PathEnv
+        $exe = Find-NgrokExe
+        if (-not $exe) {
+            $exe = Install-NgrokFromZip
+        }
+    }
+    if (-not $exe) {
+        Write-Warn "ngrok not found - Webhook button needs ngrok.exe"
+        Write-Warn "  Re-run INSTALL.bat or: winget install Ngrok.Ngrok"
+        return $null
+    }
+    Write-Ok "ngrok: $exe"
+
+    $stableDir = Join-Path $env:LOCALAPPDATA "ngrok"
+    $stable = Join-Path $stableDir "ngrok.exe"
+    if ($exe -ne $stable) {
+        New-Item -ItemType Directory -Force -Path $stableDir | Out-Null
+        try {
+            Copy-Item -LiteralPath $exe -Destination $stable -Force
+            Write-Ok "Copied ngrok to $stable (Launcher looks here)"
+            $exe = $stable
+        } catch {
+            Write-Warn "Could not copy ngrok to $stable : $_"
+        }
+    }
+
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if (-not $userPath) { $userPath = "" }
+    $dir = Split-Path -Parent $exe
+    $parts = @($userPath.Split(";") | Where-Object { $_ })
+    if ($parts -notcontains $dir) {
+        [Environment]::SetEnvironmentVariable("Path", ($userPath.TrimEnd(";") + ";" + $dir), "User")
+        Write-Ok "Added to User PATH: $dir"
+        Refresh-PathEnv
+    }
+    return $exe
+}
+
 function New-DesktopShortcut(
     [string]$Name,
     [string]$TargetPath,
@@ -149,7 +240,7 @@ function New-DesktopShortcut(
     $sc.WorkingDirectory = $WorkingDirectory
     $sc.Description = $Description
     if ($IconPath -and (Test-Path $IconPath)) {
-        $sc.IconLocation = $IconPath
+        $sc.IconLocation = "$IconPath,0"
     }
     $sc.Save()
     Write-Ok "Desktop: $Name.lnk"
@@ -174,20 +265,7 @@ if (-not $script:PythonExe) {
 $pyVer = & $script:PythonExe -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
 Write-Ok "Python $pyVer ($script:PythonExe)"
 
-$ngrokCmd = Get-Command ngrok -ErrorAction SilentlyContinue
-$ngrokLocal = Test-Path (Join-Path $ProjectRoot "ngrok.exe")
-if ($ngrokCmd -or $ngrokLocal) {
-    $ngrokPath = if ($ngrokCmd) { $ngrokCmd.Source } else { (Join-Path $ProjectRoot "ngrok.exe") }
-    Write-Ok "ngrok: $ngrokPath"
-} else {
-    Write-Warn "ngrok not found (PATH or .\ngrok.exe) - optional until Webhook/Token setup"
-    Write-Warn "  Download: https://ngrok.com/download  or  winget search ngrok"
-    if ($InstallPrerequisites) {
-        # Package id varies by winget source; try common ids then ignore failure
-        $ok = Try-WingetInstall "Ngrok.Ngrok" "ngrok"
-        if (-not $ok) { Try-WingetInstall "ngrok.ngrok" "ngrok" | Out-Null }
-    }
-}
+$script:NgrokExe = Install-NgrokIfMissing
 
 Refresh-PathEnv
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
@@ -261,12 +339,19 @@ if ($CreateDesktopShortcuts -and -not $SkipDesktopShortcuts) {
         -WorkingDirectory (Join-Path $ProjectRoot "no_api_send_bill_manual") `
         -Description "Bill Automation Kit - Send Bill Launcher" `
         -IconPath $icon
-    New-DesktopShortcut `
-        -Name "Capture Bill Launcher" `
-        -TargetPath (Join-Path $ProjectRoot "run_capture_launcher.vbs") `
-        -WorkingDirectory $ProjectRoot `
-        -Description "Bill Automation Kit - Capture Bill Launcher" `
-        -IconPath $icon
+    $oldCapture = Join-Path ([Environment]::GetFolderPath("Desktop")) "Capture Bill Launcher.lnk"
+    if (Test-Path -LiteralPath $oldCapture) {
+        Remove-Item -LiteralPath $oldCapture -Force
+        Write-Ok "Removed Desktop: Capture Bill Launcher.lnk (use ຖ່າຍຮູບບິນ in Send Bill Launcher)"
+    }
+    if ($script:NgrokExe -and (Test-Path -LiteralPath $script:NgrokExe)) {
+        New-DesktopShortcut `
+            -Name "ngrok" `
+            -TargetPath $script:NgrokExe `
+            -WorkingDirectory (Split-Path -Parent $script:NgrokExe) `
+            -Description "ngrok CLI (Webhook tunnel)" `
+            -IconPath $script:NgrokExe
+    }
 }
 
 # --- F. Secrets check (warnings only) ---

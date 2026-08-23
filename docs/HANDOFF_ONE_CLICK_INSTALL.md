@@ -11,7 +11,7 @@ Repo เป้าหมาย: `https://github.com/RockstarRoungphet/Bill_Automa
 
 1. Clone / โหลดชุดแจกจาก Git
 2. **ดับเบิลคลิก `INSTALL.bat`** ที่ root ของ repo
-3. สคริปต์ติดตั้งอัตโนมัติ: Python (ถ้ายังไม่มี), venv, pip packages, Playwright Chromium, โฟลเดอร์ runtime, **ไอคอน Desktop**
+3. สคริปต์ติดตั้งอัตโนมัติ: Python (ถ้ายังไม่มี), ngrok (Webhook), venv, pip packages, Playwright Chromium, โฟลเดอร์ runtime, **ไอคอน Desktop** (รวม ngrok)
 4. ผู้ใช้ดับเบิลคลิกไอคอน **Send Bill Launcher** → กรอก Settings เอง (Sheet / เพจ / Webhook)
 5. ไม่ต้องให้ AI บนเครื่องทดสอบมานั่งรัน `setup_windows.ps1` อีก
 
@@ -29,8 +29,8 @@ Repo เป้าหมาย: `https://github.com/RockstarRoungphet/Bill_Automa
 
 ไอคอนที่สร้างบน Desktop:
 
-- `Send Bill Launcher.lnk` → `no_api_send_bill_manual\run_launcher_ui.vbs`
-- `Capture Bill Launcher.lnk` → `run_capture_launcher.vbs`
+- `Send Bill Launcher.lnk` → `no_api_send_bill_manual\run_launcher_ui.vbs` (ไอคอน `send_bill.ico,0`)
+- ไม่สร้าง `Capture Bill Launcher.lnk` — ผู้ใช้กด **ຖ່າຍຮູບບິນ** ใน Send Bill Launcher
 
 ---
 
@@ -49,7 +49,7 @@ Repo เป้าหมาย: `https://github.com/RockstarRoungphet/Bill_Automa
 
 Parameters:
 
-- `-InstallPrerequisites` — winget ติดตั้ง Python 3.12 (และพยายาม ngrok/git ถ้าขาด)
+- `-InstallPrerequisites` — winget ติดตั้ง Python 3.12, ngrok (คัดลอกไป `%LOCALAPPDATA%\ngrok\` + PATH + ไอคอน Desktop), และ git ถ้าขาด
 - `-CreateDesktopShortcuts` — สร้างไอคอน Desktop (default **เปิด** ถ้าไม่ใส่ `-SkipDesktopShortcuts`)
 - `-SkipPlaywright` — ข้ามดาวน์โหลด Chromium
 - `-SkipDesktopShortcuts` — ไม่สร้างไอคอน
@@ -105,7 +105,7 @@ Launcher มี first-run เปิด Settings อัตโนมัติเ�
 
 1) มี INSTALL.bat ที่ root — ดับเบิลคลิกแล้วรัน
    setup_windows.ps1 -InstallPrerequisites -CreateDesktopShortcuts
-2) setup ต้องสร้างไอคอน Desktop: Send Bill Launcher + Capture Bill Launcher
+2) setup ต้องสร้างไอคอน Desktop: Send Bill Launcher เท่านั้น (ไม่สร้าง Capture Bill Launcher)
 3) หลัง winget ติดตั้ง Python ต้อง refresh PATH + fallback หา python.exe
 4) ใช้ python -m pip แทน pip.exe --upgrade pip
 5) run_launcher_ui.bat ต้องหา .venv ของ manual แล้วค่อย ..\.venv

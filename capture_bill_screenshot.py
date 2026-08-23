@@ -377,10 +377,10 @@ async def async_capture_private_paginated(
             browser = None
         else:
             browser = await p.chromium.launch(headless=True, args=STEALTH_CHROME_ARGS)
-            context = await browser.new_context(
-                viewport=VIEWPORT,
-                storage_state=storage_state_path,
-            )
+            ctx_kwargs = {"viewport": VIEWPORT}
+            if storage_state_path and os.path.isfile(storage_state_path):
+                ctx_kwargs["storage_state"] = storage_state_path
+            context = await browser.new_context(**ctx_kwargs)
             await context.add_init_script(STEALTH_INIT_SCRIPT)
         t1 = time.perf_counter()
 
@@ -410,6 +410,14 @@ async def async_capture_private_paginated(
                     await pages[0].wait_for_timeout(5000)
                     await _goto_all_anousith_pages(pages, urls)
                     await asyncio.gather(*[pg.wait_for_timeout(int(wait_sec * 1000)) for pg in pages])
+                    auth_save = storage_state_path or os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)), "auth.json"
+                    )
+                    try:
+                        await context.storage_state(path=auth_save)
+                        print(f"💾 บันทึก session Anousith ที่ {auth_save}")
+                    except Exception:
+                        pass
                 else:
                     print("⚠️ ล็อกอินอัตโนมัติไม่สำเร็จ — กรุณารัน save_auth_state.py แล้วล็อกอินด้วยมือ")
                     sys.exit(1)
@@ -577,23 +585,36 @@ def main():
         if skipped_no_tracking > 0:
             print(f"ℹ️ ຂ້າມ {skipped_no_tracking} ແຖວທີ່ສະຖານະເທົ່າກັບ '{FILTER_COL_A_VALUE}' ແຕ່ບໍ່ມີ tracking ID ຫຼືຮູບແບບບໍ່ຖືກ")
 
-    if use_private and not user_data_dir and not storage_state_path:
-        print("⚠️  ใช้ --private ต้องระบุ --user-data-dir หรือ --storage-state เพื่อใช้ session ที่ล็อกอินแล้ว")
-        print("   ตัวอย่าง: --user-data-dir /path/to/chrome/profile หรือ --storage-state auth.json")
+    _load_dotenv()
+    default_auth = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auth.json")
+    has_creds = bool(
+        os.environ.get("ANOUSITH_USER", "").strip()
+        and os.environ.get("ANOUSITH_PASSWORD", "").strip()
+    )
+    if not storage_state_path and os.path.isfile(default_auth):
+        storage_state_path = default_auth
+    if not use_private and (has_creds or (storage_state_path and os.path.isfile(storage_state_path))):
+        use_private = True
+    if use_private and not user_data_dir and not (
+        (storage_state_path and os.path.isfile(storage_state_path)) or has_creds
+    ):
+        print("ℹ️ ไม่มี auth.json และไม่มี ANOUSITH_USER/PASSWORD — ใช้หน้าสาธารณะ")
+        use_private = False
 
-    print(f"จะถ่ายภาพบิล {len(tracking_ids)} รายการ เก็บที่ {bills_dir}/" + (" (หน้าบิลส่วนตัว โหลดหลายหน้าพร้อมกัน + ถ่ายเป็น wave)" if use_private and (user_data_dir or storage_state_path) else " (หน้าสาธารณะ เบราว์เซอร์เดียว)" if not use_private else " (หน้าบิลส่วนตัว)"))
+    print(f"จะถ่ายภาพบิล {len(tracking_ids)} รายการ เก็บที่ {bills_dir}/" + (" (หน้าบิลส่วนตัว โหลดหลายหน้าพร้อมกัน + ถ่ายเป็น wave)" if use_private else " (หน้าสาธารณะ เบราว์เซอร์เดียว)"))
     ok = 0
     not_captured: List[str] = []
-    if use_private and (user_data_dir or storage_state_path):
-        # โหลด .env เพื่อใช้ล็อกอินอัตโนมัติเมื่อ session หมดอายุ
-        _load_dotenv()
+    if use_private:
         # โหมด private: async โหลด P หน้าพร้อมกัน แล้วถ่ายการ์ดเป็น wave
         if user_data_dir and not os.path.isdir(user_data_dir):
             print(f"❌ โฟลเดอร์ไม่พบ: {user_data_dir}")
             sys.exit(1)
         if storage_state_path and not os.path.isfile(storage_state_path):
-            print(f"❌ ไฟล์ไม่พบ: {storage_state_path}")
-            sys.exit(1)
+            if has_creds:
+                print(f"ℹ️ ไม่พบ {storage_state_path} — จะล็อกอินด้วย ANOUSITH_USER จาก .env")
+            else:
+                print(f"❌ ไฟล์ไม่พบ: {storage_state_path}")
+                sys.exit(1)
         # ช่วงวันที่: ถ้าไม่ระบุ --start-date/--end-date ใช้ วันที่ 1 ของเดือนก่อน ถึงวันนี้
         start_date: Optional[str] = start_date_arg
         end_date: Optional[str] = end_date_arg

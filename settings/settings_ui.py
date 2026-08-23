@@ -2,12 +2,25 @@
 """Settings window for Bill_Automation_Kit (tkinter)."""
 from __future__ import annotations
 
+import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Dict, List, Optional
 
-from settings.config_io import ConfigIO, StatusItem
+from settings.config_io import ConfigIO, StatusItem, PAGE_REPLY_TEXT_KEYS
+from settings.graph_page import GraphPageError, fetch_page_by_id, list_pages_from_user_token
+from settings.open_browser_profile import (
+    FACEBOOK_INBOX_URL,
+    HAL_LOGIN_URL,
+    open_persistent_login,
+)
+
+_DEFAULT_SUBSCRIBED = [
+    "messages",
+    "messaging_postbacks",
+    "message_echoes",
+]
 
 
 class SettingsWindow:
@@ -17,12 +30,15 @@ class SettingsWindow:
         self.io.ensure_seeded()
         self.win = tk.Toplevel(parent)
         self.win.title("Settings — Bill Automation Kit")
-        self.win.geometry("720x560")
-        self.win.minsize(640, 480)
+        self.win.geometry("820x760")
+        self.win.minsize(740, 640)
         self.win.transient(parent)
 
         self._page_rows: List[Dict[str, Any]] = []
         self._show_tokens = tk.BooleanVar(value=False)
+        self.var_user_token = tk.StringVar()
+        self.var_business_page_id = tk.StringVar()
+        self._browser_login_thread: threading.Thread | None = None
 
         nb = ttk.Notebook(self.win)
         nb.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
@@ -31,15 +47,24 @@ class SettingsWindow:
         self.tab_sheet = ttk.Frame(nb)
         self.tab_pages = ttk.Frame(nb)
         self.tab_webhook = ttk.Frame(nb)
+        self.tab_carrier = ttk.Frame(nb)
+        self.tab_welcome = ttk.Frame(nb)
+        self.tab_browser = ttk.Frame(nb)
         nb.add(self.tab_check, text="1. Checklist")
         nb.add(self.tab_sheet, text="2. Google Sheet")
         nb.add(self.tab_pages, text="3. เพจ Facebook")
         nb.add(self.tab_webhook, text="4. Webhook / ngrok")
+        nb.add(self.tab_carrier, text="5. ขนส่ง")
+        nb.add(self.tab_welcome, text="6. Welcome")
+        nb.add(self.tab_browser, text="7. Browser Profile")
 
         self._build_checklist()
         self._build_sheet()
         self._build_pages()
         self._build_webhook()
+        self._build_carrier()
+        self._build_welcome()
+        self._build_browser_profile()
 
         bottom = ttk.Frame(self.win)
         bottom.pack(fill=tk.X, padx=8, pady=(0, 8))
@@ -170,11 +195,53 @@ class SettingsWindow:
 
     def _build_pages(self) -> None:
         frm = self.tab_pages
+
+        import_frm = ttk.LabelFrame(frm, text="นำเข้าจาก Long-Lived User Token")
+        import_frm.pack(fill=tk.X, padx=10, pady=(8, 4))
+        ttk.Label(
+            import_frm,
+            text=(
+                "วาง Long-Lived User Token แล้วกดดึงรายการเพจ — "
+                "ระบบจะดึงชื่อเพจ / Page ID / Page Token ให้เลือกนำเข้า "
+                "(ไม่เก็บ User Token ลงไฟล์)"
+            ),
+            wraplength=700,
+            foreground="#444",
+        ).pack(anchor=tk.W, padx=8, pady=(6, 4))
+        row = ttk.Frame(import_frm)
+        row.pack(fill=tk.X, padx=8, pady=(0, 8))
+        ttk.Label(row, text="User Token").pack(side=tk.LEFT)
+        ttk.Entry(row, textvariable=self.var_user_token, width=52, show="*").pack(
+            side=tk.LEFT, padx=8, fill=tk.X, expand=True
+        )
+        ttk.Button(
+            row, text="ดึงรายการเพจ…", command=self._fetch_pages_from_user_token
+        ).pack(side=tk.LEFT)
+
+        biz = ttk.LabelFrame(frm, text="เพจ Business (ดึงด้วย Page ID)")
+        biz.pack(fill=tk.X, padx=10, pady=(0, 4))
+        ttk.Label(
+            biz,
+            text=(
+                "ถ้าเพจไม่โผล่จาก「ดึงรายการเพจ」 — ใส่ Page ID แล้วกดดึงเพจนี้ "
+                "(ใช้ User Token ช่องด้านบน)"
+            ),
+            wraplength=700,
+            foreground="#444",
+        ).pack(anchor=tk.W, padx=8, pady=(6, 4))
+        brow = ttk.Frame(biz)
+        brow.pack(fill=tk.X, padx=8, pady=(0, 8))
+        ttk.Label(brow, text="Page ID").pack(side=tk.LEFT)
+        ttk.Entry(brow, textvariable=self.var_business_page_id, width=28).pack(
+            side=tk.LEFT, padx=8
+        )
+        ttk.Button(
+            brow, text="ดึงเพจนี้…", command=self._fetch_page_by_page_id
+        ).pack(side=tk.LEFT)
+
         top = ttk.Frame(frm)
         top.pack(fill=tk.X, padx=10, pady=8)
-        ttk.Label(top, text="รายการเพจ (page_token.json + ซิงก์ page_name_to_id)").pack(
-            side=tk.LEFT
-        )
+        ttk.Label(top, text="รายการเพจที่บันทึก (page_token.json)").pack(side=tk.LEFT)
         ttk.Checkbutton(
             top,
             text="แสดง token",
@@ -184,55 +251,30 @@ class SettingsWindow:
 
         cols = ("name", "page_id", "token", "enabled")
         self.pages_tree = ttk.Treeview(
-            frm, columns=cols, show="headings", height=10, selectmode="browse"
+            frm, columns=cols, show="headings", height=12, selectmode="browse"
         )
         self.pages_tree.heading("name", text="page_name")
         self.pages_tree.heading("page_id", text="page_id")
         self.pages_tree.heading("token", text="access_token")
         self.pages_tree.heading("enabled", text="enabled")
-        self.pages_tree.column("name", width=140)
+        self.pages_tree.column("name", width=160)
         self.pages_tree.column("page_id", width=140)
         self.pages_tree.column("token", width=260)
         self.pages_tree.column("enabled", width=60)
         self.pages_tree.pack(fill=tk.BOTH, expand=True, padx=10)
 
-        edit = ttk.LabelFrame(frm, text="แก้ไขแถวที่เลือก / เพิ่มใหม่")
-        edit.pack(fill=tk.X, padx=10, pady=8)
-        self.var_p_name = tk.StringVar()
-        self.var_p_id = tk.StringVar()
-        self.var_p_token = tk.StringVar()
-        self.var_p_enabled = tk.BooleanVar(value=True)
-        eg = ttk.Frame(edit)
-        eg.pack(fill=tk.X, padx=6, pady=4)
-        ttk.Label(eg, text="ชื่อเพจ").grid(row=0, column=0, sticky=tk.W)
-        ttk.Entry(eg, textvariable=self.var_p_name, width=24).grid(
-            row=0, column=1, padx=4
-        )
-        ttk.Label(eg, text="Page ID").grid(row=0, column=2, sticky=tk.W)
-        ttk.Entry(eg, textvariable=self.var_p_id, width=22).grid(row=0, column=3, padx=4)
-        ttk.Label(eg, text="Token").grid(row=1, column=0, sticky=tk.W, pady=4)
-        ttk.Entry(eg, textvariable=self.var_p_token, width=50).grid(
-            row=1, column=1, columnspan=2, sticky=tk.EW, pady=4, padx=4
-        )
-        ttk.Checkbutton(eg, text="enabled", variable=self.var_p_enabled).grid(
-            row=1, column=3, sticky=tk.W
-        )
-
         bf = ttk.Frame(frm)
         bf.pack(fill=tk.X, padx=10, pady=(0, 8))
-        ttk.Button(bf, text="โหลดจากแถวที่เลือก", command=self._load_selected_page).pack(
-            side=tk.LEFT, padx=(0, 6)
-        )
-        ttk.Button(bf, text="เพิ่ม / อัปเดตแถว", command=self._upsert_page_row).pack(
-            side=tk.LEFT, padx=(0, 6)
-        )
         ttk.Button(bf, text="ลบแถวที่เลือก", command=self._delete_page_row).pack(
             side=tk.LEFT, padx=(0, 6)
         )
+        ttk.Button(
+            bf, text="สลับ enabled", command=self._toggle_selected_enabled
+        ).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(bf, text="บันทึกเพจ", command=self.save_pages).pack(side=tk.RIGHT)
 
-        self.pages_tree.bind("<<TreeviewSelect>>", lambda _e: self._load_selected_page())
         self._page_rows = self.io.load_page_tokens()
+        self._strip_placeholder_pages()
         self._reload_page_tree_display()
 
     def _mask_token(self, token: str) -> str:
@@ -258,61 +300,6 @@ class SettingsWindow:
                 ),
             )
 
-    def _load_selected_page(self) -> None:
-        sel = self.pages_tree.selection()
-        if not sel:
-            return
-        try:
-            idx = int(sel[0])
-        except ValueError:
-            return
-        if idx < 0 or idx >= len(self._page_rows):
-            return
-        p = self._page_rows[idx]
-        self.var_p_name.set(p.get("page_name") or "")
-        self.var_p_id.set(p.get("page_id") or "")
-        self.var_p_token.set(p.get("access_token") or "")
-        self.var_p_enabled.set(p.get("enabled", True) is not False)
-
-    def _upsert_page_row(self) -> None:
-        name = self.var_p_name.get().strip()
-        pid = self.var_p_id.get().strip()
-        token = self.var_p_token.get().strip()
-        enabled = self.var_p_enabled.get()
-        if not name and not pid:
-            messagebox.showwarning("ข้อมูลไม่ครบ", "ใส่ page_name หรือ page_id", parent=self.win)
-            return
-        entry = {
-            "page_name": name,
-            "page_id": pid,
-            "access_token": token,
-            "enabled": enabled,
-            "subscribed_fields": [
-                "messages",
-                "messaging_postbacks",
-                "message_echoes",
-            ],
-        }
-        sel = self.pages_tree.selection()
-        if sel:
-            try:
-                idx = int(sel[0])
-                if 0 <= idx < len(self._page_rows):
-                    # keep token if user left field empty while editing masked intent: require re-paste
-                    self._page_rows[idx] = entry
-                    self._reload_page_tree_display()
-                    return
-            except ValueError:
-                pass
-        # update by matching name or id
-        for i, p in enumerate(self._page_rows):
-            if (name and p.get("page_name") == name) or (pid and p.get("page_id") == pid):
-                self._page_rows[i] = entry
-                self._reload_page_tree_display()
-                return
-        self._page_rows.append(entry)
-        self._reload_page_tree_display()
-
     def _delete_page_row(self) -> None:
         sel = self.pages_tree.selection()
         if not sel:
@@ -325,8 +312,257 @@ class SettingsWindow:
             del self._page_rows[idx]
             self._reload_page_tree_display()
 
+    def _toggle_selected_enabled(self) -> None:
+        sel = self.pages_tree.selection()
+        if not sel:
+            return
+        try:
+            idx = int(sel[0])
+        except ValueError:
+            return
+        if 0 <= idx < len(self._page_rows):
+            cur = self._page_rows[idx].get("enabled", True) is not False
+            self._page_rows[idx]["enabled"] = not cur
+            self._reload_page_tree_display()
+            self.pages_tree.selection_set(str(idx))
+
+    def _strip_placeholder_pages(self) -> None:
+        """Remove template placeholder rows from the in-memory page list."""
+        cleaned: List[Dict[str, Any]] = []
+        for p in self._page_rows:
+            pid = str(p.get("page_id") or "").strip()
+            name = str(p.get("page_name") or "").strip()
+            if pid in ("", "YOUR_FACEBOOK_PAGE_ID") or pid.upper().startswith("YOUR_"):
+                continue
+            if name in ("", "YourPageName"):
+                continue
+            cleaned.append(p)
+        self._page_rows = cleaned
+
+    def _merge_imported_pages(self, pages: List[Dict[str, str]]) -> int:
+        """Upsert by page_id. Returns number of rows added or updated."""
+        self._strip_placeholder_pages()
+        by_id = {
+            str(p.get("page_id") or ""): i
+            for i, p in enumerate(self._page_rows)
+            if p.get("page_id")
+        }
+        changed = 0
+        for src in pages:
+            pid = str(src.get("page_id") or "").strip()
+            name = str(src.get("page_name") or "").strip()
+            token = str(src.get("access_token") or "").strip()
+            if not pid or not token:
+                continue
+            if pid in ("", "YOUR_FACEBOOK_PAGE_ID") or pid.upper().startswith("YOUR_"):
+                continue
+            entry = {
+                "page_name": name,
+                "page_id": pid,
+                "access_token": token,
+                "enabled": True,
+                "subscribed_fields": list(_DEFAULT_SUBSCRIBED),
+            }
+            if pid in by_id:
+                idx = by_id[pid]
+                prev = self._page_rows[idx]
+                entry["enabled"] = prev.get("enabled", True) is not False
+                entry["subscribed_fields"] = prev.get(
+                    "subscribed_fields", list(_DEFAULT_SUBSCRIBED)
+                )
+                self._page_rows[idx] = entry
+            else:
+                by_id[pid] = len(self._page_rows)
+                self._page_rows.append(entry)
+            changed += 1
+        self._reload_page_tree_display()
+        return changed
+
+    def _fetch_page_by_page_id(self) -> None:
+        token = self.var_user_token.get().strip()
+        page_id = self.var_business_page_id.get().strip()
+        if not token:
+            messagebox.showwarning(
+                "ข้อมูลไม่ครบ",
+                "วาง Long-Lived User Token ในช่องด้านบนก่อน",
+                parent=self.win,
+            )
+            return
+        if not page_id:
+            messagebox.showwarning(
+                "ข้อมูลไม่ครบ",
+                "ใส่ Page ID ของเพจ Business",
+                parent=self.win,
+            )
+            return
+        self.win.config(cursor="watch")
+        self.win.update_idletasks()
+        try:
+            page = fetch_page_by_id(token, page_id)
+        except GraphPageError as e:
+            messagebox.showerror("ดึงเพจไม่สำเร็จ", str(e), parent=self.win)
+            return
+        except Exception as e:
+            messagebox.showerror("ดึงเพจไม่สำเร็จ", str(e), parent=self.win)
+            return
+        finally:
+            self.win.config(cursor="")
+
+        n = self._merge_imported_pages([page])
+        pname = page.get("page_name") or page_id
+        messagebox.showinfo(
+            "นำเข้าแล้ว",
+            f"เพิ่ม/อัปเดตเพจ «{pname}» ({n} แถว) — กด「บันทึกเพจ」เพื่อเขียนลงไฟล์",
+            parent=self.win,
+        )
+
+    def _fetch_pages_from_user_token(self) -> None:
+        token = self.var_user_token.get().strip()
+        if not token:
+            messagebox.showwarning(
+                "ข้อมูลไม่ครบ",
+                "วาง Long-Lived User Token ก่อน",
+                parent=self.win,
+            )
+            return
+        self.win.config(cursor="watch")
+        self.win.update_idletasks()
+        try:
+            pages = list_pages_from_user_token(token)
+        except GraphPageError as e:
+            messagebox.showerror("ดึงเพจไม่สำเร็จ", str(e), parent=self.win)
+            return
+        except Exception as e:
+            messagebox.showerror("ดึงเพจไม่สำเร็จ", str(e), parent=self.win)
+            return
+        finally:
+            self.win.config(cursor="")
+
+        if not pages:
+            messagebox.showwarning(
+                "ไม่พบเพจ",
+                "Token นี้ไม่มีเพจที่อ่านได้",
+                parent=self.win,
+            )
+            return
+        selected = self._show_page_pick_dialog(pages)
+        if not selected:
+            return
+        n = self._merge_imported_pages(selected)
+        messagebox.showinfo(
+            "นำเข้าแล้ว",
+            f"เพิ่ม/อัปเดต {n} เพจในตาราง — กด「บันทึกเพจ」เพื่อเขียนลงไฟล์",
+            parent=self.win,
+        )
+
+    def _show_page_pick_dialog(
+        self, pages: List[Dict[str, str]]
+    ) -> Optional[List[Dict[str, str]]]:
+        existing = {
+            str(p.get("page_id") or "")
+            for p in self._page_rows
+            if p.get("page_id")
+        }
+        dlg = tk.Toplevel(self.win)
+        dlg.title("เลือกเพจที่จะนำเข้า")
+        dlg.geometry("640x420")
+        dlg.transient(self.win)
+        dlg.grab_set()
+
+        ttk.Label(
+            dlg,
+            text="เลือกเพจที่ต้องการนำเข้า (Page Token จะถูกเก็บ — ไม่เก็บ User Token)",
+            wraplength=600,
+        ).pack(anchor=tk.W, padx=10, pady=8)
+
+        cols = ("sel", "name", "page_id", "token")
+        tree = ttk.Treeview(
+            dlg, columns=cols, show="headings", height=14, selectmode="none"
+        )
+        tree.heading("sel", text="เลือก")
+        tree.heading("name", text="ชื่อเพจ")
+        tree.heading("page_id", text="Page ID")
+        tree.heading("token", text="Page Token")
+        tree.column("sel", width=50, anchor=tk.CENTER)
+        tree.column("name", width=180)
+        tree.column("page_id", width=140)
+        tree.column("token", width=220)
+        tree.pack(fill=tk.BOTH, expand=True, padx=10)
+
+        checked: Dict[str, bool] = {}
+        for i, p in enumerate(pages):
+            iid = str(i)
+            pid = p.get("page_id") or ""
+            # default: select pages not already in the table
+            checked[iid] = pid not in existing
+            mark = "☑" if checked[iid] else "☐"
+            tree.insert(
+                "",
+                tk.END,
+                iid=iid,
+                values=(
+                    mark,
+                    p.get("page_name") or "",
+                    pid,
+                    self._mask_token(str(p.get("access_token") or "")),
+                ),
+            )
+
+        def toggle(_event=None) -> None:
+            sel = tree.selection()
+            if not sel:
+                return
+            iid = sel[0]
+            checked[iid] = not checked.get(iid, False)
+            vals = list(tree.item(iid, "values"))
+            vals[0] = "☑" if checked[iid] else "☐"
+            tree.item(iid, values=vals)
+
+        def select_all(state: bool) -> None:
+            for iid in tree.get_children():
+                checked[iid] = state
+                vals = list(tree.item(iid, "values"))
+                vals[0] = "☑" if state else "☐"
+                tree.item(iid, values=vals)
+
+        tree.bind("<ButtonRelease-1>", toggle)
+        tree.bind("<space>", toggle)
+
+        result: Dict[str, Any] = {"pages": None}
+
+        def do_import() -> None:
+            chosen = [
+                pages[int(iid)]
+                for iid in tree.get_children()
+                if checked.get(iid) and iid.isdigit() and int(iid) < len(pages)
+            ]
+            if not chosen:
+                messagebox.showwarning(
+                    "ยังไม่เลือก", "เลือกอย่างน้อย 1 เพจ", parent=dlg
+                )
+                return
+            result["pages"] = chosen
+            dlg.destroy()
+
+        btn = ttk.Frame(dlg)
+        btn.pack(fill=tk.X, padx=10, pady=8)
+        ttk.Button(btn, text="เลือกทั้งหมด", command=lambda: select_all(True)).pack(
+            side=tk.LEFT, padx=(0, 6)
+        )
+        ttk.Button(btn, text="ไม่เลือกเลย", command=lambda: select_all(False)).pack(
+            side=tk.LEFT, padx=(0, 6)
+        )
+        ttk.Button(btn, text="ยกเลิก", command=dlg.destroy).pack(side=tk.RIGHT)
+        ttk.Button(btn, text="นำเข้าที่เลือก", command=do_import).pack(
+            side=tk.RIGHT, padx=(0, 8)
+        )
+
+        self.win.wait_window(dlg)
+        return result["pages"]
+
     def save_pages(self) -> bool:
         try:
+            self._strip_placeholder_pages()
             self.io.save_pages(self._page_rows)
             messagebox.showinfo(
                 "บันทึก",
@@ -334,6 +570,8 @@ class SettingsWindow:
                 parent=self.win,
             )
             self.refresh_checklist()
+            if hasattr(self, "cmb_welcome_page"):
+                self._refresh_welcome_page_list()
             return True
         except Exception as e:
             messagebox.showerror("ผิดพลาด", str(e), parent=self.win)
@@ -390,6 +628,362 @@ class SettingsWindow:
             messagebox.showerror("ผิดพลาด", str(e), parent=self.win)
             return False
 
+    # ----- Carrier -----
+
+    def _build_carrier(self) -> None:
+        frm = self.tab_carrier
+        fields = self.io.load_carrier_fields()
+        ttk.Label(
+            frm,
+            text=(
+                "บัญชีล็อกอินเว็บขนส่งสำหรับถ่ายบิล — บันทึกลง .env "
+                "(ไม่ขึ้น git) ไม่บังคับถ้าใช้แค่ส่งบิล Token/Playwright"
+            ),
+            wraplength=720,
+            foreground="#444",
+        ).pack(anchor=tk.W, padx=10, pady=8)
+
+        self.var_anousith_user = tk.StringVar(value=fields.get("ANOUSITH_USER") or "")
+        self.var_anousith_pass = tk.StringVar(value=fields.get("ANOUSITH_PASSWORD") or "")
+        self.var_hal_user = tk.StringVar(value=fields.get("HAL_USER") or "")
+        self.var_hal_pass = tk.StringVar(value=fields.get("HAL_PASSWORD") or "")
+
+        an = ttk.LabelFrame(frm, text="Anousith")
+        an.pack(fill=tk.X, padx=10, pady=6)
+        ag = ttk.Frame(an)
+        ag.pack(fill=tk.X, padx=8, pady=6)
+        ttk.Label(ag, text="User").grid(row=0, column=0, sticky=tk.W, pady=4)
+        ttk.Entry(ag, textvariable=self.var_anousith_user, width=40).grid(
+            row=0, column=1, sticky=tk.EW, padx=8, pady=4
+        )
+        ttk.Label(ag, text="Password").grid(row=1, column=0, sticky=tk.W, pady=4)
+        ttk.Entry(ag, textvariable=self.var_anousith_pass, width=40, show="*").grid(
+            row=1, column=1, sticky=tk.EW, padx=8, pady=4
+        )
+        ag.columnconfigure(1, weight=1)
+
+        hal = ttk.LabelFrame(frm, text="HAL Express")
+        hal.pack(fill=tk.X, padx=10, pady=6)
+        hg = ttk.Frame(hal)
+        hg.pack(fill=tk.X, padx=8, pady=6)
+        ttk.Label(hg, text="User").grid(row=0, column=0, sticky=tk.W, pady=4)
+        ttk.Entry(hg, textvariable=self.var_hal_user, width=40).grid(
+            row=0, column=1, sticky=tk.EW, padx=8, pady=4
+        )
+        ttk.Label(hg, text="Password").grid(row=1, column=0, sticky=tk.W, pady=4)
+        ttk.Entry(hg, textvariable=self.var_hal_pass, width=40, show="*").grid(
+            row=1, column=1, sticky=tk.EW, padx=8, pady=4
+        )
+        hg.columnconfigure(1, weight=1)
+
+        ttk.Button(frm, text="บันทึกขนส่ง", command=self.save_carrier).pack(
+            anchor=tk.E, padx=10, pady=12
+        )
+
+    def save_carrier(self) -> bool:
+        try:
+            self.io.save_carrier_fields(
+                self.var_anousith_user.get(),
+                self.var_anousith_pass.get(),
+                self.var_hal_user.get(),
+                self.var_hal_pass.get(),
+            )
+            messagebox.showinfo("บันทึก", "บันทึกบัญชีขนส่งลง .env แล้ว", parent=self.win)
+            self.refresh_checklist()
+            return True
+        except Exception as e:
+            messagebox.showerror("ผิดพลาด", str(e), parent=self.win)
+            return False
+
+    def save_carrier_silent(self) -> bool:
+        try:
+            self.io.save_carrier_fields(
+                self.var_anousith_user.get(),
+                self.var_anousith_pass.get(),
+                self.var_hal_user.get(),
+                self.var_hal_pass.get(),
+            )
+            return True
+        except Exception as e:
+            messagebox.showerror("ขนส่ง", str(e), parent=self.win)
+            return False
+
+    # ----- Welcome -----
+
+    def _build_welcome(self) -> None:
+        frm = self.tab_welcome
+        cfg = self.io.load_page_reply_config()
+        g = cfg.get("globals") or {}
+
+        self.var_promo_off = tk.BooleanVar(value=bool(g.get("promo_auto_send_disabled")))
+        self.var_msg_off = tk.BooleanVar(value=bool(g.get("messenger_auto_replies_disabled")))
+        self.var_generic_off = tk.BooleanVar(value=bool(g.get("generic_reply_disabled")))
+
+        top = ttk.LabelFrame(frm, text="ทั้งระบบ")
+        top.pack(fill=tk.X, padx=10, pady=(8, 4))
+        ttk.Checkbutton(
+            top,
+            text="ปิด auto-reply Messenger (welcome / ราคา / คีย์เวิร์ด)",
+            variable=self.var_msg_off,
+        ).pack(anchor=tk.W, padx=8, pady=2)
+        ttk.Checkbutton(
+            top,
+            text="ปิดข้อความ generic เมื่อไม่ตรงคีย์เวิร์ด",
+            variable=self.var_generic_off,
+        ).pack(anchor=tk.W, padx=8, pady=2)
+        ttk.Checkbutton(
+            top,
+            text="ปิดส่งโปรโมอัตโนมัติ (send_promo_within_24h)",
+            variable=self.var_promo_off,
+        ).pack(anchor=tk.W, padx=8, pady=(2, 6))
+
+        pick = ttk.Frame(frm)
+        pick.pack(fill=tk.X, padx=10, pady=6)
+        ttk.Label(pick, text="เพจ").pack(side=tk.LEFT)
+        self.var_welcome_page = tk.StringVar()
+        self.cmb_welcome_page = ttk.Combobox(
+            pick, textvariable=self.var_welcome_page, state="readonly", width=36
+        )
+        self.cmb_welcome_page.pack(side=tk.LEFT, padx=8)
+        self.cmb_welcome_page.bind("<<ComboboxSelected>>", lambda _e: self._load_welcome_page())
+        ttk.Button(pick, text="รีเฟรชรายชื่อเพจ", command=self._refresh_welcome_page_list).pack(
+            side=tk.LEFT
+        )
+
+        self.var_media_hint = tk.StringVar(value="")
+        ttk.Label(
+            frm, textvariable=self.var_media_hint, foreground="#555", wraplength=720
+        ).pack(anchor=tk.W, padx=10)
+
+        labels = {
+            "welcome_text": "welcome_text (ต้อนรับ — ว่างได้ถ้าจะส่งแค่รูป)",
+            "price_reply": "price_reply (ตอบราคา)",
+            "promo_text": "promo_text (โปรโม)",
+            "cod_reply": "cod_reply (เก็บปลายทาง)",
+            "order_reply": "order_reply (สั่งซื้อ)",
+        }
+        self._welcome_texts: Dict[str, tk.Text] = {}
+        body = ttk.Frame(frm)
+        body.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
+        for i, key in enumerate(PAGE_REPLY_TEXT_KEYS):
+            ttk.Label(body, text=labels.get(key, key)).grid(
+                row=i * 2, column=0, sticky=tk.W, pady=(4, 0)
+            )
+            txt = tk.Text(body, height=2, wrap=tk.WORD, font=("Segoe UI", 9))
+            txt.grid(row=i * 2 + 1, column=0, sticky=tk.NSEW, pady=(0, 2))
+            self._welcome_texts[key] = txt
+            body.rowconfigure(i * 2 + 1, weight=1)
+        body.columnconfigure(0, weight=1)
+
+        media_row = ttk.Frame(frm)
+        media_row.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 4))
+        self._welcome_media_list = self._build_media_box(
+            media_row, "สื่อต้อนรับ", "welcome"
+        )
+        self._promo_media_list = self._build_media_box(
+            media_row, "สื่อโปรโม", "promo"
+        )
+        media_row.columnconfigure(0, weight=1)
+        media_row.columnconfigure(1, weight=1)
+
+        bf = ttk.Frame(frm)
+        bf.pack(fill=tk.X, padx=10, pady=(0, 8))
+        ttk.Button(bf, text="บันทึก Welcome", command=self.save_welcome).pack(side=tk.RIGHT)
+
+        self._welcome_loaded_page = ""
+        self._refresh_welcome_page_list()
+
+    def _welcome_globals(self) -> Dict[str, Any]:
+        return {
+            "promo_auto_send_disabled": self.var_promo_off.get(),
+            "messenger_auto_replies_disabled": self.var_msg_off.get(),
+            "generic_reply_disabled": self.var_generic_off.get(),
+        }
+
+    def _welcome_fields_from_ui(self) -> Dict[str, str]:
+        out: Dict[str, str] = {}
+        for key, widget in self._welcome_texts.items():
+            out[key] = widget.get("1.0", tk.END).rstrip("\n")
+        return out
+
+    def _real_page_names_for_welcome(self) -> List[str]:
+        return self.io.real_page_names(self._page_rows)
+
+    def _refresh_welcome_page_list(self) -> None:
+        names = self._real_page_names_for_welcome()
+        self.cmb_welcome_page["values"] = names
+        if names:
+            cur = self.var_welcome_page.get()
+            if cur not in names:
+                self.var_welcome_page.set(names[0])
+            self._load_welcome_page()
+        else:
+            self.var_welcome_page.set("")
+            self.var_media_hint.set(
+                "ยังไม่มีเพจจริงในตาราง — ไปแท็บเพจ Facebook นำเข้าแล้วบันทึกเพจก่อน"
+            )
+            for widget in self._welcome_texts.values():
+                widget.delete("1.0", tk.END)
+            self._welcome_loaded_page = ""
+            self._reload_media_lists()
+
+    def _load_welcome_page(self) -> None:
+        name = self.var_welcome_page.get().strip()
+        cfg = self.io.load_page_reply_config()
+        pages = cfg.get("pages") or {}
+        data = pages.get(name) if isinstance(pages.get(name), dict) else {}
+        for key, widget in self._welcome_texts.items():
+            widget.delete("1.0", tk.END)
+            widget.insert("1.0", str(data.get(key) or ""))
+        if name:
+            try:
+                wdir = self.io.page_media_dir("welcome", name)
+                pdir = self.io.page_media_dir("promo", name)
+                self.var_media_hint.set(
+                    f"ต้อนรับ: {wdir}   |   โปรโม: {pdir}"
+                )
+            except ValueError:
+                self.var_media_hint.set("")
+        self._welcome_loaded_page = name
+        self._reload_media_lists()
+
+    def _build_media_box(self, parent: ttk.Frame, title: str, kind: str) -> ttk.Treeview:
+        box = ttk.LabelFrame(parent, text=title)
+        col = 0 if kind == "welcome" else 1
+        box.grid(row=0, column=col, sticky=tk.NSEW, padx=(0, 6) if col == 0 else (6, 0))
+        tree = ttk.Treeview(
+            box, columns=("name", "kind"), show="headings", height=6, selectmode="extended"
+        )
+        tree.heading("name", text="ไฟล์")
+        tree.heading("kind", text="ชนิด")
+        tree.column("name", width=220)
+        tree.column("kind", width=60)
+        tree.pack(fill=tk.BOTH, expand=True, padx=6, pady=(4, 0))
+        btns = ttk.Frame(box)
+        btns.pack(fill=tk.X, padx=6, pady=6)
+        ttk.Button(
+            btns, text="เพิ่มไฟล์…", command=lambda k=kind: self._add_page_media(k)
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            btns, text="ลบที่เลือก", command=lambda k=kind: self._delete_page_media(k)
+        ).pack(side=tk.LEFT, padx=6)
+        if kind == "welcome":
+            self._welcome_media_tree = tree
+        else:
+            self._promo_media_tree = tree
+        return tree
+
+    def _media_tree_for(self, kind: str) -> ttk.Treeview:
+        return self._welcome_media_tree if kind == "welcome" else self._promo_media_tree
+
+    def _reload_media_lists(self) -> None:
+        name = (self.var_welcome_page.get() or "").strip()
+        for kind in ("welcome", "promo"):
+            tree = self._media_tree_for(kind)
+            for iid in tree.get_children():
+                tree.delete(iid)
+            if not name:
+                continue
+            try:
+                rows = self.io.list_page_media(kind, name)
+            except ValueError:
+                continue
+            for i, row in enumerate(rows):
+                label = "รูป" if row.get("kind") == "image" else "วิดีโอ"
+                tree.insert("", tk.END, iid=str(i), values=(row.get("name") or "", label))
+
+    def _add_page_media(self, kind: str) -> None:
+        name = (self.var_welcome_page.get() or "").strip()
+        if not name:
+            messagebox.showwarning(
+                "ยังไม่มีเพจ", "เลือกเพจก่อน แล้วค่อยเพิ่มไฟล์", parent=self.win
+            )
+            return
+        paths = filedialog.askopenfilenames(
+            parent=self.win,
+            title="เลือก<fim-middle>รูปหรือวิดีโอ",
+            filetypes=[
+                ("สื่อ", "*.jpg *.jpeg *.png *.gif *.webp *.mp4 *.mov *.m4v *.webm"),
+                ("รูป", "*.jpg *.jpeg *.png *.gif *.webp"),
+                ("วิดีโอ", "*.mp4 *.mov *.m4v *.webm"),
+                ("All", "*.*"),
+            ],
+        )
+        if not paths:
+            return
+        try:
+            added = self.io.add_page_media(kind, name, [Path(p) for p in paths])
+            self._reload_media_lists()
+            messagebox.showinfo(
+                "เพิ่มแล้ว",
+                f"คัดลอก {len(added)} ไฟล์เข้าโฟลเดอร์เพจแล้ว",
+                parent=self.win,
+            )
+        except Exception as e:
+            messagebox.showerror("ผิดพลาด", str(e), parent=self.win)
+
+    def _delete_page_media(self, kind: str) -> None:
+        name = (self.var_welcome_page.get() or "").strip()
+        if not name:
+            return
+        tree = self._media_tree_for(kind)
+        sel = tree.selection()
+        if not sel:
+            messagebox.showwarning("ยังไม่เลือก", "เลือกไฟล์ในรายการก่อน", parent=self.win)
+            return
+        names = [str(tree.item(iid, "values")[0]) for iid in sel]
+        if not messagebox.askyesno(
+            "ลบไฟล์",
+            "ลบไฟล์ที่เลือกออกจากโฟลเดอร์เพจ?\n" + "\n".join(names),
+            parent=self.win,
+        ):
+            return
+        try:
+            n = self.io.delete_page_media(kind, name, names)
+            self._reload_media_lists()
+            messagebox.showinfo("ลบแล้ว", f"ลบ {n} ไฟล์", parent=self.win)
+        except Exception as e:
+            messagebox.showerror("ผิดพลาด", str(e), parent=self.win)
+
+    def save_welcome(self) -> bool:
+        name = self.var_welcome_page.get().strip()
+        if not name:
+            messagebox.showwarning(
+                "ยังไม่มีเพจ",
+                "นำเข้าเพจในแท็บเพจ Facebook ก่อน",
+                parent=self.win,
+            )
+            return False
+        try:
+            self.io.save_page_reply_config(
+                self._welcome_globals(),
+                name,
+                self._welcome_fields_from_ui(),
+            )
+            self._welcome_loaded_page = name
+            messagebox.showinfo(
+                "บันทึก",
+                f"บันทึก Welcome ของเพจ «{name}» ลง page_reply_config.json แล้ว",
+                parent=self.win,
+            )
+            return True
+        except Exception as e:
+            messagebox.showerror("ผิดพลาด", str(e), parent=self.win)
+            return False
+
+    def save_welcome_silent(self) -> bool:
+        name = self.var_welcome_page.get().strip()
+        try:
+            self.io.save_page_reply_config(
+                self._welcome_globals(),
+                name or None,
+                self._welcome_fields_from_ui() if name else None,
+            )
+            return True
+        except Exception as e:
+            messagebox.showerror("Welcome", str(e), parent=self.win)
+            return False
+
     # ----- all -----
 
     def save_all(self) -> None:
@@ -397,7 +991,11 @@ class SettingsWindow:
         ok = self.save_sheet_silent() and ok
         ok = self.save_pages_silent() and ok
         ok = self.save_webhook_silent() and ok
+        ok = self.save_carrier_silent() and ok
+        ok = self.save_welcome_silent() and ok
+        ok = self.save_browser_profile_silent() and ok
         self.refresh_checklist()
+        self._refresh_welcome_page_list()
         if ok:
             messagebox.showinfo("บันทึก", "บันทึกการตั้งค่าทั้งหมดแล้ว", parent=self.win)
         else:
@@ -418,6 +1016,7 @@ class SettingsWindow:
 
     def save_pages_silent(self) -> bool:
         try:
+            self._strip_placeholder_pages()
             self.io.save_pages(self._page_rows)
             return True
         except Exception as e:
@@ -436,6 +1035,177 @@ class SettingsWindow:
         except Exception as e:
             messagebox.showerror("Webhook", str(e), parent=self.win)
             return False
+
+    # ----- Browser Profile -----
+
+    def _build_browser_profile(self) -> None:
+        frm = self.tab_browser
+        us = self.io.load_user_settings()
+        self.var_fb_profile = tk.StringVar(
+            value=us.get("facebook_user_data_dir") or "no_api_send_bill/browser_profile"
+        )
+        self.var_hal_profile = tk.StringVar(
+            value=us.get("hal_user_data_dir") or "hal_browser_profile"
+        )
+
+        ttk.Label(
+            frm,
+            text=(
+                "โฟลเดอร์เก็บ session เบราว์เซอร์ (cookies) สำหรับส่งบิล Facebook และถ่ายบิล HAL\n"
+                "กดปุ่มเปิดเบราว์เซอร์ ล็อกอินให้เสร็จ แล้วปิดหน้าต่างเบราว์เซอร์ — session อยู่ในโฟลเดอร์นี้ "
+                "(อย่า commit โฟลเดอร์ profile)"
+            ),
+            wraplength=720,
+            foreground="#444",
+        ).pack(anchor=tk.W, padx=10, pady=8)
+
+        box = ttk.LabelFrame(frm, text="Path")
+        box.pack(fill=tk.X, padx=10, pady=6)
+        g = ttk.Frame(box)
+        g.pack(fill=tk.X, padx=8, pady=8)
+
+        ttk.Label(g, text="Facebook profile").grid(row=0, column=0, sticky=tk.W, pady=4)
+        ttk.Entry(g, textvariable=self.var_fb_profile, width=48).grid(
+            row=0, column=1, sticky=tk.EW, padx=8, pady=4
+        )
+        ttk.Button(g, text="Browse…", command=self._browse_fb_profile).grid(
+            row=0, column=2, padx=4, pady=4
+        )
+
+        ttk.Label(g, text="HAL profile").grid(row=1, column=0, sticky=tk.W, pady=4)
+        ttk.Entry(g, textvariable=self.var_hal_profile, width=48).grid(
+            row=1, column=1, sticky=tk.EW, padx=8, pady=4
+        )
+        ttk.Button(g, text="Browse…", command=self._browse_hal_profile).grid(
+            row=1, column=2, padx=4, pady=4
+        )
+        g.columnconfigure(1, weight=1)
+
+        btns = ttk.Frame(frm)
+        btns.pack(fill=tk.X, padx=10, pady=12)
+        self.btn_fb_login = ttk.Button(
+            btns,
+            text="เปิดเบราว์เซอร์ Facebook (ล็อกอิน)",
+            command=self._open_facebook_login,
+        )
+        self.btn_fb_login.pack(side=tk.LEFT, padx=(0, 8))
+        self.btn_hal_login = ttk.Button(
+            btns,
+            text="เปิดเบราว์เซอร์ HAL (ล็อกอิน)",
+            command=self._open_hal_login,
+        )
+        self.btn_hal_login.pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(btns, text="บันทึก Browser Profile", command=self.save_browser_profile).pack(
+            side=tk.RIGHT
+        )
+
+    def _browse_fb_profile(self) -> None:
+        initial = self.io.resolve_user_data_path(self.var_fb_profile.get())
+        if not initial.is_dir():
+            initial = self.io.root
+        chosen = filedialog.askdirectory(
+            parent=self.win,
+            title="เลือกโฟลเดอร์ Facebook browser profile",
+            initialdir=str(initial),
+        )
+        if chosen:
+            self.var_fb_profile.set(self.io.to_stored_user_data_path(chosen))
+
+    def _browse_hal_profile(self) -> None:
+        initial = self.io.resolve_user_data_path(self.var_hal_profile.get())
+        if not initial.is_dir():
+            initial = self.io.root
+        chosen = filedialog.askdirectory(
+            parent=self.win,
+            title="เลือกโฟลเดอร์ HAL browser profile",
+            initialdir=str(initial),
+        )
+        if chosen:
+            self.var_hal_profile.set(self.io.to_stored_user_data_path(chosen))
+
+    def save_browser_profile(self) -> bool:
+        try:
+            self.io.save_browser_profile_fields(
+                self.var_fb_profile.get(),
+                self.var_hal_profile.get(),
+            )
+            us = self.io.load_user_settings()
+            self.var_fb_profile.set(us["facebook_user_data_dir"])
+            self.var_hal_profile.set(us["hal_user_data_dir"])
+            messagebox.showinfo(
+                "บันทึก",
+                "บันทึก user_settings.json + HAL_USER_DATA_DIR ใน .env แล้ว",
+                parent=self.win,
+            )
+            self.refresh_checklist()
+            return True
+        except Exception as e:
+            messagebox.showerror("ผิดพลาด", str(e), parent=self.win)
+            return False
+
+    def save_browser_profile_silent(self) -> bool:
+        try:
+            self.io.save_browser_profile_fields(
+                self.var_fb_profile.get(),
+                self.var_hal_profile.get(),
+            )
+            return True
+        except Exception as e:
+            messagebox.showerror("Browser Profile", str(e), parent=self.win)
+            return False
+
+    def _open_facebook_login(self) -> None:
+        self._open_profile_login(
+            self.var_fb_profile.get() or "no_api_send_bill/browser_profile",
+            FACEBOOK_INBOX_URL,
+            "Facebook",
+        )
+
+    def _open_hal_login(self) -> None:
+        self._open_profile_login(
+            self.var_hal_profile.get() or "hal_browser_profile",
+            HAL_LOGIN_URL,
+            "HAL",
+        )
+
+    def _set_browser_login_busy(self, busy: bool) -> None:
+        state = tk.DISABLED if busy else tk.NORMAL
+        for btn in (getattr(self, "btn_fb_login", None), getattr(self, "btn_hal_login", None)):
+            if btn is not None:
+                btn.config(state=state)
+
+    def _open_profile_login(self, path_value: str, url: str, label: str) -> None:
+        t = self._browser_login_thread
+        if t is not None and t.is_alive():
+            messagebox.showinfo(
+                "กำลังเปิดอยู่",
+                "เบราว์เซอร์ล็อกอินยังเปิดอยู่ — ปิดหน้าต่างนั้นก่อน",
+                parent=self.win,
+            )
+            return
+        profile = self.io.resolve_user_data_path(path_value)
+        self._set_browser_login_busy(True)
+        err: list = []
+
+        def worker() -> None:
+            try:
+                open_persistent_login(profile, url)
+            except Exception as e:
+                err.append(e)
+
+            def done() -> None:
+                self._browser_login_thread = None
+                self._set_browser_login_busy(False)
+                if err:
+                    messagebox.showerror("ผิดพลาด", str(err[0]), parent=self.win)
+
+            try:
+                self.win.after(0, done)
+            except Exception:
+                pass
+
+        self._browser_login_thread = threading.Thread(target=worker, daemon=True)
+        self._browser_login_thread.start()
 
 
 def open_settings_window(parent: tk.Misc, project_root: Path) -> SettingsWindow:

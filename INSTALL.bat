@@ -11,9 +11,10 @@ echo  ============================================================
 echo.
 echo   This will:
 echo     - Install Python (if missing) via winget
+echo     - Install ngrok (if missing) for Webhook
 echo     - Create virtual environments + install packages
 echo     - Install Playwright Chromium
-echo     - Create Desktop icons (Send Bill / Capture Bill)
+echo     - Create Desktop icon (Send Bill Launcher; ngrok if installed)
 echo.
 echo   After this finishes, double-click "Send Bill Launcher"
 echo   on the Desktop and fill Settings yourself.

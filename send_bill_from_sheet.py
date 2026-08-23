@@ -736,6 +736,7 @@ def main():
     skipped_no_psid = 0
     skipped_api = 0
     skipped_no_page = 0
+    skipped_no_image = 0
     sheet_updates: List[Tuple[str, int, str]] = []
     # ใช้รูปแบบวันที่ที่รองรับทั้ง Linux/Windows (เลิกใช้ %-d/%-m เพราะ Windows ไม่รองรับ)
     today_str = datetime.now().strftime("%d/%m/%Y")
@@ -756,11 +757,18 @@ def main():
             skipped_no_psid += 1
             continue
 
+        img_path = find_bill_image(bills_dir, tracking_id) if bills_dir else None
+        if not img_path:
+            print(
+                f"❌ ไม่พบรูปบิล — ไม่ส่ง Order {order_id} tracking {tracking_id} [{page_name}]"
+            )
+            skipped_no_image += 1
+            continue
+
         text = bill_tracking_customer_message(tracking_id, carrier)
 
         if dry_run:
-            img_note = " + รูป" if bills_dir and find_bill_image(bills_dir, tracking_id) else ""
-            print(f"  จะส่ง → Order {order_id} [{page_name}] (PSID {psid}): {tracking_id}{img_note}")
+            print(f"  จะส่ง → Order {order_id} [{page_name}] (PSID {psid}): {tracking_id} + รูป")
             sent += 1
             if (order_id, tracking_id) in row_map:
                 sn, rn = row_map[(order_id, tracking_id)]
@@ -772,13 +780,11 @@ def main():
             skipped_api += 1
             continue
 
-        img_path = find_bill_image(bills_dir, tracking_id) if bills_dir else None
-        if img_path:
-            att_id = upload_attachment(pid, token, img_path)
-            if att_id:
-                send_image(pid, token, psid, att_id, use_message_tag=True)
+        att_id = upload_attachment(pid, token, img_path)
+        if att_id:
+            send_image(pid, token, psid, att_id, use_message_tag=True)
 
-        print(f"✅ ส่งแล้ว Order {order_id} [{page_name}] tracking {tracking_id}" + (" + รูป" if img_path else ""))
+        print(f"✅ ส่งแล้ว Order {order_id} [{page_name}] tracking {tracking_id} + รูป")
         sent += 1
 
         if (order_id, tracking_id) in row_map:
@@ -787,6 +793,8 @@ def main():
 
     print(f"\n{'='*50}")
     print(f"รวมส่งได้ {sent} รายการ")
+    if skipped_no_image:
+        print(f"ไม่พบรูปบิล — ไม่ส่ง: {skipped_no_image} รายการ")
     if skipped_no_psid:
         print(f"ไม่มี PSID: {skipped_no_psid} รายการ")
     if skipped_api:

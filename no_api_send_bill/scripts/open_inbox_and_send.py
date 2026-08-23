@@ -65,6 +65,25 @@ PAGE_NAME_TO_ID_FILE = CONFIG_DIR / "page_name_to_id.json"
 DEFAULT_BILLS_DIR = Path(__file__).resolve().parent.parent.parent / "bill_images"
 # User data directory สำหรับเก็บ browser profile (cookies, localStorage, session) - ทำให้ session คงอยู่เหมือน browser ปกติ
 DEFAULT_USER_DATA_DIR = SCRIPT_DIR.parent / "browser_profile"
+KIT_ROOT = SCRIPT_DIR.parent.parent
+USER_SETTINGS_FILE = KIT_ROOT / "user_settings.json"
+
+
+def _resolve_facebook_user_data_dir() -> Path:
+    """Prefer facebook_user_data_dir from kit user_settings.json; else DEFAULT_USER_DATA_DIR."""
+    if USER_SETTINGS_FILE.is_file():
+        try:
+            with open(USER_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            raw = str((data or {}).get("facebook_user_data_dir") or "").strip()
+            if raw:
+                p = Path(raw)
+                if not p.is_absolute():
+                    p = KIT_ROOT / p
+                return p.resolve()
+        except Exception:
+            pass
+    return DEFAULT_USER_DATA_DIR.resolve()
 
 def _agent_ui_snapshot(page: Page) -> dict:
     try:
@@ -1331,6 +1350,7 @@ def load_page_name_to_id() -> dict:
         print(f"❌ ไม่สามารถโหลด config ได้: {e}", file=sys.stderr)
         return {}
 
+
 def get_page_id(page_name: str, mapping: dict) -> Optional[str]:
     """แปลงชื่อเพจเป็น page_id"""
     return mapping.get(page_name.strip())
@@ -1442,22 +1462,17 @@ def build_inbox_url(page_name: str, page_id: str, business_page_names: set, sele
 
 
 def get_initial_inbox_url(page_name: str, page_id: str, business_page_names: set, mapping: dict) -> str:
-    """สร้าง URL สำหรับเปิดหน้า Inbox ด้วย selected_item_id (เพื่อป้องกันการเปิดแชทล่าสุดอัตโนมัติ)
-    - สำหรับ non-business pages: บังคับใช้ selected_item_id เสมอ → raise ValueError ถ้าไม่มี
-    - สำหรับ business pages: ใช้ business_id + selected_item_id (เพื่อป้องกันการเปิดแชทล่าสุด)
+    """สร้าง URL สำหรับเปิดหน้า Inbox
+    selected_item_id เป็นทางเลือก — ถ้าไม่มีใน config จะเปิด Inbox ของเพจนั้นโดยไม่เจาะจงแชท
     """
-    selected_item_id = mapping.get("__initial_selected_item_id") or mapping.get("__initial_selected_item_ids", {}).get(page_name)
-    
-    if page_name in business_page_names:
-        # Business pages: ใช้ business_id + selected_item_id (ไม่ต้องใช้ asset_id)
-        if not selected_item_id:
-            raise ValueError(f"❌ ไม่พบ __initial_selected_item_id ใน config สำหรับ business page '{page_name}'. กรุณาเพิ่ม selected_item_id ใน config/page_name_to_id.json")
-        return build_inbox_url(page_name, page_id, business_page_names, selected_item_id=selected_item_id)
-    
-    # Non-business pages: ใช้ asset_id + selected_page_id + selected_item_id
+    raw_initial = mapping.get("__initial_selected_item_id")
+    per_page = (mapping.get("__initial_selected_item_ids") or {}).get(page_name)
+    selected_item_id = raw_initial or per_page
     if not selected_item_id:
-        raise ValueError(f"❌ ไม่พบ __initial_selected_item_id ใน config สำหรับเพจ '{page_name}'. กรุณาเพิ่ม selected_item_id ใน config/page_name_to_id.json")
-    return build_inbox_url(page_name, page_id, business_page_names, selected_item_id=selected_item_id)
+        print(
+            f"   ℹ️ ไม่มี selected_item_id สำหรับเพจ '{page_name}' — เปิด Inbox ปกติ"
+        )
+    return build_inbox_url(page_name, page_id, business_page_names, selected_item_id=selected_item_id or None)
 
 def find_bill_image(bills_dir: Path, tracking_id: str) -> Optional[Path]:
     """หาไฟล์รูปบิลที่ตรงกับ tracking_id"""
@@ -4012,18 +4027,9 @@ def send_bill_single(
     # หารูปบิล
     image_path = find_bill_image(bills_dir, tracking_id)
     if not image_path:
-        sample_images = []
-        try:
-            sample_images = [
-                p.name for p in sorted(bills_dir.iterdir())
-                if p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
-            ][:8]
-        except Exception:
-            sample_images = []
-        print(f"⚠️ ไม่พบรูปบิลที่ตรง tracking_id='{tracking_id}' ในโฟลเดอร์: {bills_dir}")
-        if sample_images:
-            print(f"   ตัวอย่างไฟล์ที่มีอยู่: {', '.join(sample_images)}")
-        print("   💡 จะส่งเฉพาะข้อความ (ไม่มีรูป)")
+        print(f"❌ ไม่พบรูปบิล — ไม่ส่ง Order {order_id} tracking={tracking_id}")
+        print(f"   โฟลเดอร์: {bills_dir}")
+        return False
     else:
         try:
             img_size = image_path.stat().st_size
@@ -4223,12 +4229,47 @@ def send_bill_from_rows(
     run_start = time.time()
     is_notify_mode, notify_label, notify_message = _resolve_notify_mode(notify_mode)
     from collections import defaultdict
+    mapping = load_page_name_to_id()
     grouped_by_page: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
+    skipped_unknown: dict[str, int] = defaultdict(int)
     for order_id, page_name, third, carrier in rows:
-        grouped_by_page[page_name].append((order_id, third, carrier))
-    
+        if _is_whatsapp_page(page_name) or get_page_id(page_name, mapping):
+            grouped_by_page[page_name].append((order_id, third, carrier))
+        else:
+            skipped_unknown[page_name] += 1
+
+    if skipped_unknown:
+        skipped_n = sum(skipped_unknown.values())
+        print(
+            f"⏭️ ข้าม {skipped_n} รายการ จากเพจที่ไม่มีใน Settings (ไม่ใช้ในโปรเจกต์นี้):"
+        )
+        for name, n in skipped_unknown.items():
+            print(f"   - {name}: {n} รายการ")
+
+    skipped_no_image: dict[str, int] = defaultdict(int)
+    if not is_notify_mode:
+        kept: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
+        for page_name, orders in grouped_by_page.items():
+            for order_id, tracking_id, carrier in orders:
+                if find_bill_image(bills_dir, tracking_id):
+                    kept[page_name].append((order_id, tracking_id, carrier))
+                else:
+                    skipped_no_image[page_name] += 1
+                    print(
+                        f"❌ ไม่พบรูปบิล — ไม่ส่ง Order {order_id} tracking={tracking_id} (เพจ {page_name})"
+                    )
+        grouped_by_page = kept
+        if skipped_no_image:
+            print(
+                f"⏭️ ไม่ส่ง {sum(skipped_no_image.values())} รายการ เพราะไม่พบรูปบิล"
+            )
+
+    if not grouped_by_page:
+        print(f"ไม่พบรายการที่จะ{notify_label} (เพจใน Settings และมีรูปบิล) — ไม่เปิดเบราว์เซอร์")
+        return []
+
     total_pages = len(grouped_by_page)
-    total_orders = len(rows)
+    total_orders = sum(len(v) for v in grouped_by_page.values())
 
     print(f"พบ {total_orders} รายการที่จะ{notify_label} (จาก {total_pages} เพจ)")
     for page_name, orders in grouped_by_page.items():
@@ -4286,13 +4327,16 @@ def send_bill_from_rows(
         mapping = load_page_name_to_id()
         business_page_names = get_business_page_names(mapping)
         first_page_name = None
+        first_page_id = None
         for _pn in grouped_by_page.keys():
-            if not _is_whatsapp_page(_pn):
+            if _is_whatsapp_page(_pn):
+                continue
+            _pid = get_page_id(_pn, mapping)
+            if _pid:
                 first_page_name = _pn
+                first_page_id = _pid
                 break
-        first_page_id = get_page_id(first_page_name, mapping) if first_page_name else None
         if first_page_name and mapping:
-            first_page_id = get_page_id(first_page_name, mapping)
             if first_page_id:
                 # ใช้ get_initial_inbox_url เพื่อเปิดแชทด้วย selected_item_id (ไม่เปิดแชทล่าสุด)
                 inbox_url = get_initial_inbox_url(first_page_name, first_page_id, business_page_names, mapping)
@@ -4376,16 +4420,9 @@ def send_bill_from_rows(
 
                 is_wa = _is_whatsapp_page(page_name)
                 page_id = None if is_wa else get_page_id(page_name, mapping)
-                
                 if not is_wa and not page_id:
-                    print(f"\n{'='*60}")
-                    print(f"❌ ข้ามเพจ '{page_name}' — ไม่พบ page_id")
-                    print(f"{'='*60}")
-                    for order_id, _, __ in orders_in_page:
-                        print(f"   ❌ ข้าม Order {order_id}")
-                        fail_count += 1
                     continue
-                
+
                 print(f"\n{'='*60}")
                 if is_wa:
                     print(f"📱 [{page_idx}/{total_pages}] WhatsApp ({len(orders_in_page)} รายการ)")
@@ -4787,8 +4824,7 @@ def main():
             user_data_dir = Path(args[i + 1])
         args = [a for a in args if a != "--user-data-dir" and args.index(a) != i + 1]
     else:
-        # ใช้ค่า default ถ้าไม่ระบุ
-        user_data_dir = DEFAULT_USER_DATA_DIR
+        user_data_dir = _resolve_facebook_user_data_dir()
     
     if "--csv" in args:
         i = args.index("--csv")
