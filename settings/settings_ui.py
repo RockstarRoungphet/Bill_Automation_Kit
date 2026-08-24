@@ -22,6 +22,66 @@ _DEFAULT_SUBSCRIBED = [
     "message_echoes",
 ]
 
+_WHITE = "#ffffff"
+_BORDER = "#dadce0"
+_TEXT = "#202124"
+_HOVER = "#f1f3f4"
+
+
+class _HoverTip:
+    """Tooltip ตอนชี้เมาส์ — ใช้แทนป้ายคำอธิบายยาว."""
+
+    def __init__(self, widget: tk.Misc, text: str, delay_ms: int = 450) -> None:
+        self.widget = widget
+        self.text = text
+        self.delay_ms = delay_ms
+        self._after: Optional[str] = None
+        self._tip: Optional[tk.Toplevel] = None
+        widget.bind("<Enter>", self._enter, add="+")
+        widget.bind("<Leave>", self._leave, add="+")
+        widget.bind("<ButtonPress>", self._leave, add="+")
+
+    def _enter(self, _e: Any = None) -> None:
+        self._cancel()
+        self._after = self.widget.after(self.delay_ms, self._show)
+
+    def _leave(self, _e: Any = None) -> None:
+        self._cancel()
+        if self._tip is not None:
+            self._tip.destroy()
+            self._tip = None
+
+    def _cancel(self) -> None:
+        if self._after:
+            self.widget.after_cancel(self._after)
+            self._after = None
+
+    def _show(self) -> None:
+        if self._tip is not None or not self.text:
+            return
+        x = self.widget.winfo_rootx() + 12
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        tip = tk.Toplevel(self.widget)
+        tip.wm_overrideredirect(True)
+        tip.wm_geometry(f"+{x}+{y}")
+        tip.configure(bg=_BORDER)
+        tk.Label(
+            tip,
+            text=self.text,
+            justify=tk.LEFT,
+            background=_WHITE,
+            foreground=_TEXT,
+            relief=tk.FLAT,
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=_BORDER,
+            font=("Segoe UI", 9),
+            wraplength=420,
+            padx=8,
+            pady=6,
+        ).pack()
+        self._tip = tip
+
 
 class SettingsWindow:
     def __init__(self, parent: tk.Misc, root_path: Path):
@@ -33,6 +93,7 @@ class SettingsWindow:
         self.win.geometry("820x760")
         self.win.minsize(740, 640)
         self.win.transient(parent)
+        self._apply_minimal_style()
 
         self._page_rows: List[Dict[str, Any]] = []
         self._show_tokens = tk.BooleanVar(value=False)
@@ -79,16 +140,127 @@ class SettingsWindow:
         self.refresh_checklist()
         self.win.grab_set()
 
+    def _apply_minimal_style(self) -> None:
+        self.win.configure(bg=_WHITE)
+        style = ttk.Style(self.win)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure(".", background=_WHITE, foreground=_TEXT, fieldbackground=_WHITE)
+        style.configure("TFrame", background=_WHITE)
+        style.configure("TLabel", background=_WHITE, foreground=_TEXT)
+        style.configure("TCheckbutton", background=_WHITE, foreground=_TEXT)
+        style.configure("TNotebook", background=_WHITE, borderwidth=0)
+        style.configure(
+            "TNotebook.Tab",
+            background=_WHITE,
+            foreground=_TEXT,
+            padding=(12, 6),
+            borderwidth=0,
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", _WHITE), ("active", _HOVER)],
+            foreground=[("selected", _TEXT)],
+        )
+        style.configure(
+            "TLabelframe",
+            background=_WHITE,
+            foreground=_TEXT,
+            bordercolor=_BORDER,
+            lightcolor=_WHITE,
+            darkcolor=_BORDER,
+            relief="solid",
+            borderwidth=1,
+        )
+        style.configure("TLabelframe.Label", background=_WHITE, foreground=_TEXT)
+        style.configure(
+            "TButton",
+            background=_WHITE,
+            foreground=_TEXT,
+            bordercolor=_BORDER,
+            lightcolor=_WHITE,
+            darkcolor=_BORDER,
+            relief="solid",
+            borderwidth=1,
+            padding=(10, 4),
+        )
+        style.map(
+            "TButton",
+            background=[("active", _HOVER), ("pressed", _HOVER)],
+            bordercolor=[("active", "#bdc1c6"), ("pressed", "#bdc1c6")],
+        )
+        style.configure(
+            "TEntry",
+            fieldbackground=_WHITE,
+            background=_WHITE,
+            foreground=_TEXT,
+            bordercolor=_BORDER,
+            lightcolor=_BORDER,
+            darkcolor=_BORDER,
+            insertcolor=_TEXT,
+            padding=3,
+        )
+        style.configure(
+            "TCombobox",
+            fieldbackground=_WHITE,
+            background=_WHITE,
+            foreground=_TEXT,
+            bordercolor=_BORDER,
+            arrowcolor=_TEXT,
+            padding=3,
+        )
+        style.configure(
+            "Treeview",
+            background=_WHITE,
+            fieldbackground=_WHITE,
+            foreground=_TEXT,
+            bordercolor=_BORDER,
+            lightcolor=_WHITE,
+            darkcolor=_BORDER,
+            rowheight=22,
+        )
+        style.configure(
+            "Treeview.Heading",
+            background=_WHITE,
+            foreground=_TEXT,
+            bordercolor=_BORDER,
+            relief="flat",
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", _HOVER)],
+            foreground=[("selected", _TEXT)],
+        )
+
+    def _tip(self, widget: tk.Misc, text: str) -> None:
+        _HoverTip(widget, text)
+
+    def _style_text(self, widget: tk.Text) -> None:
+        widget.configure(
+            background=_WHITE,
+            foreground=_TEXT,
+            relief=tk.FLAT,
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=_BORDER,
+            highlightcolor=_BORDER,
+            insertbackground=_TEXT,
+        )
+
     # ----- Checklist -----
 
     def _build_checklist(self) -> None:
         frm = self.tab_check
-        ttk.Label(
-            frm,
-            text="สถานะการตั้งค่า — รายการสีแดง/ขาดต้องแก้ก่อนใช้งานส่งบิล (Token)",
-            wraplength=680,
-        ).pack(anchor=tk.W, padx=10, pady=8)
+        head = ttk.Label(frm, text="สถานะการตั้งค่า")
+        head.pack(anchor=tk.W, padx=10, pady=8)
+        self._tip(
+            head,
+            "รายการสีแดง/ขาดต้องแก้ก่อนใช้งานส่งบิล (Token)",
+        )
         self.check_box = tk.Text(frm, height=18, wrap=tk.WORD, font=("Consolas", 10))
+        self._style_text(self.check_box)
         self.check_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         self.check_box.tag_configure("ok", foreground="#0a7a2f")
         self.check_box.tag_configure("bad", foreground="#b00020")
@@ -139,6 +311,10 @@ class SettingsWindow:
 
         cred_frm = ttk.LabelFrame(frm, text="Google Service Account JSON")
         cred_frm.pack(fill=tk.X, padx=10, pady=8)
+        self._tip(
+            cred_frm,
+            "บันทึกไปที่ no_api_send_bill และ no_api_send_bill_manual (sync ค่าเดียวกัน)",
+        )
         has = self.io.creds_path.is_file()
         self.var_creds_status = tk.StringVar(
             value=(
@@ -157,11 +333,6 @@ class SettingsWindow:
         ttk.Button(frm, text="บันทึก Google Sheet", command=self.save_sheet).pack(
             anchor=tk.E, padx=10, pady=8
         )
-        ttk.Label(
-            frm,
-            text="บันทึกไปที่ no_api_send_bill และ no_api_send_bill_manual (sync ค่าเดียวกัน)",
-            foreground="#555",
-        ).pack(anchor=tk.W, padx=10)
 
     def _browse_creds(self) -> None:
         path = filedialog.askopenfilename(
@@ -198,18 +369,14 @@ class SettingsWindow:
 
         import_frm = ttk.LabelFrame(frm, text="นำเข้าจาก Long-Lived User Token")
         import_frm.pack(fill=tk.X, padx=10, pady=(8, 4))
-        ttk.Label(
+        self._tip(
             import_frm,
-            text=(
-                "วาง Long-Lived User Token แล้วกดดึงรายการเพจ — "
-                "ระบบจะดึงชื่อเพจ / Page ID / Page Token ให้เลือกนำเข้า "
-                "(ไม่เก็บ User Token ลงไฟล์)"
-            ),
-            wraplength=700,
-            foreground="#444",
-        ).pack(anchor=tk.W, padx=8, pady=(6, 4))
+            "วาง Long-Lived User Token แล้วกดดึงรายการเพจ — "
+            "ระบบจะดึงชื่อเพจ / Page ID / Page Token ให้เลือกนำเข้า "
+            "(ไม่เก็บ User Token ลงไฟล์)",
+        )
         row = ttk.Frame(import_frm)
-        row.pack(fill=tk.X, padx=8, pady=(0, 8))
+        row.pack(fill=tk.X, padx=8, pady=8)
         ttk.Label(row, text="User Token").pack(side=tk.LEFT)
         ttk.Entry(row, textvariable=self.var_user_token, width=52, show="*").pack(
             side=tk.LEFT, padx=8, fill=tk.X, expand=True
@@ -220,17 +387,13 @@ class SettingsWindow:
 
         biz = ttk.LabelFrame(frm, text="เพจ Business (ดึงด้วย Page ID)")
         biz.pack(fill=tk.X, padx=10, pady=(0, 4))
-        ttk.Label(
+        self._tip(
             biz,
-            text=(
-                "ถ้าเพจไม่โผล่จาก「ดึงรายการเพจ」 — ใส่ Page ID แล้วกดดึงเพจนี้ "
-                "(ใช้ User Token ช่องด้านบน)"
-            ),
-            wraplength=700,
-            foreground="#444",
-        ).pack(anchor=tk.W, padx=8, pady=(6, 4))
+            "ถ้าเพจไม่โผล่จาก「ดึงรายการเพจ」 — ใส่ Page ID แล้วกดดึงเพจนี้ "
+            "(ใช้ User Token ช่องด้านบน)",
+        )
         brow = ttk.Frame(biz)
-        brow.pack(fill=tk.X, padx=8, pady=(0, 8))
+        brow.pack(fill=tk.X, padx=8, pady=8)
         ttk.Label(brow, text="Page ID").pack(side=tk.LEFT)
         ttk.Entry(brow, textvariable=self.var_business_page_id, width=28).pack(
             side=tk.LEFT, padx=8
@@ -466,14 +629,13 @@ class SettingsWindow:
         dlg = tk.Toplevel(self.win)
         dlg.title("เลือกเพจที่จะนำเข้า")
         dlg.geometry("640x420")
+        dlg.configure(bg=_WHITE)
         dlg.transient(self.win)
         dlg.grab_set()
 
-        ttk.Label(
-            dlg,
-            text="เลือกเพจที่ต้องการนำเข้า (Page Token จะถูกเก็บ — ไม่เก็บ User Token)",
-            wraplength=600,
-        ).pack(anchor=tk.W, padx=10, pady=8)
+        head = ttk.Label(dlg, text="เลือกเพจที่จะนำเข้า")
+        head.pack(anchor=tk.W, padx=10, pady=8)
+        self._tip(head, "Page Token จะถูกเก็บ — ไม่เก็บ User Token")
 
         cols = ("sel", "name", "page_id", "token")
         tree = ttk.Treeview(
@@ -582,8 +744,14 @@ class SettingsWindow:
     def _build_webhook(self) -> None:
         frm = self.tab_webhook
         wh = self.io.load_webhook_fields()
-        grid = ttk.Frame(frm)
-        grid.pack(fill=tk.X, padx=10, pady=10)
+        box = ttk.LabelFrame(frm, text="Webhook / ngrok")
+        box.pack(fill=tk.X, padx=10, pady=10)
+        self._tip(
+            box,
+            "ค่าจะถูก merge ลง .env และ user_settings.json (ไม่ลบ key อื่นใน .env)",
+        )
+        grid = ttk.Frame(box)
+        grid.pack(fill=tk.X, padx=8, pady=8)
 
         self.var_verify = tk.StringVar(value=wh.get("WEBHOOK_VERIFY_TOKEN") or "")
         self.var_port = tk.StringVar(value=wh.get("PORT") or "5000")
@@ -603,12 +771,6 @@ class SettingsWindow:
             )
         grid.columnconfigure(1, weight=1)
 
-        ttk.Label(
-            frm,
-            text="ค่าจะถูก merge ลง .env และ user_settings.json (ไม่ลบ key อื่นใน .env)",
-            foreground="#555",
-            wraplength=680,
-        ).pack(anchor=tk.W, padx=10)
         ttk.Button(frm, text="บันทึก Webhook / ngrok", command=self.save_webhook).pack(
             anchor=tk.E, padx=10, pady=12
         )
@@ -633,15 +795,13 @@ class SettingsWindow:
     def _build_carrier(self) -> None:
         frm = self.tab_carrier
         fields = self.io.load_carrier_fields()
-        ttk.Label(
-            frm,
-            text=(
-                "บัญชีล็อกอินเว็บขนส่งสำหรับถ่ายบิล — บันทึกลง .env "
-                "(ไม่ขึ้น git) ไม่บังคับถ้าใช้แค่ส่งบิล Token/Playwright"
-            ),
-            wraplength=720,
-            foreground="#444",
-        ).pack(anchor=tk.W, padx=10, pady=8)
+        head = ttk.Label(frm, text="บัญชีล็อกอินเว็บขนส่ง")
+        head.pack(anchor=tk.W, padx=10, pady=8)
+        self._tip(
+            head,
+            "สำหรับถ่ายบิล — บันทึกลง .env (ไม่ขึ้น git) "
+            "ไม่บังคับถ้าใช้แค่ส่งบิล Token/Playwright",
+        )
 
         self.var_anousith_user = tk.StringVar(value=fields.get("ANOUSITH_USER") or "")
         self.var_anousith_pass = tk.StringVar(value=fields.get("ANOUSITH_PASSWORD") or "")
@@ -721,6 +881,7 @@ class SettingsWindow:
 
         top = ttk.LabelFrame(frm, text="ทั้งระบบ")
         top.pack(fill=tk.X, padx=10, pady=(8, 4))
+        self._tip(top, "ตั้งค่า auto-reply ทั้งระบบ — ข้อความและสื่อด้านล่างเป็นรายเพจ")
         ttk.Checkbutton(
             top,
             text="ปิด auto-reply Messenger (welcome / ราคา / คีย์เวิร์ด)",
@@ -751,9 +912,9 @@ class SettingsWindow:
         )
 
         self.var_media_hint = tk.StringVar(value="")
-        ttk.Label(
-            frm, textvariable=self.var_media_hint, foreground="#555", wraplength=720
-        ).pack(anchor=tk.W, padx=10)
+        ttk.Label(frm, textvariable=self.var_media_hint, wraplength=720).pack(
+            anchor=tk.W, padx=10
+        )
 
         labels = {
             "welcome_text": "welcome_text (ต้อนรับ — ว่างได้ถ้าจะส่งแค่รูป)",
@@ -770,6 +931,7 @@ class SettingsWindow:
                 row=i * 2, column=0, sticky=tk.W, pady=(4, 0)
             )
             txt = tk.Text(body, height=2, wrap=tk.WORD, font=("Segoe UI", 9))
+            self._style_text(txt)
             txt.grid(row=i * 2 + 1, column=0, sticky=tk.NSEW, pady=(0, 2))
             self._welcome_texts[key] = txt
             body.rowconfigure(i * 2 + 1, weight=1)
@@ -1048,19 +1210,14 @@ class SettingsWindow:
             value=us.get("hal_user_data_dir") or "hal_browser_profile"
         )
 
-        ttk.Label(
-            frm,
-            text=(
-                "โฟลเดอร์เก็บ session เบราว์เซอร์ (cookies) สำหรับส่งบิล Facebook และถ่ายบิล HAL\n"
-                "กดปุ่มเปิดเบราว์เซอร์ ล็อกอินให้เสร็จ แล้วปิดหน้าต่างเบราว์เซอร์ — session อยู่ในโฟลเดอร์นี้ "
-                "(อย่า commit โฟลเดอร์ profile)"
-            ),
-            wraplength=720,
-            foreground="#444",
-        ).pack(anchor=tk.W, padx=10, pady=8)
-
         box = ttk.LabelFrame(frm, text="Path")
         box.pack(fill=tk.X, padx=10, pady=6)
+        self._tip(
+            box,
+            "โฟลเดอร์เก็บ session เบราว์เซอร์ (cookies) สำหรับส่งบิล Facebook และถ่ายบิล HAL — "
+            "กดปุ่มเปิดเบราว์เซอร์ ล็อกอินให้เสร็จ แล้วปิดหน้าต่าง — session อยู่ในโฟลเดอร์นี้ "
+            "(อย่า commit โฟลเดอร์ profile)",
+        )
         g = ttk.Frame(box)
         g.pack(fill=tk.X, padx=8, pady=8)
 

@@ -30,9 +30,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
-    from settings.config_io import check_setup_status
+    from settings.config_io import ConfigIO, check_setup_status
     from settings.settings_ui import open_settings_window
 except ImportError:
+    ConfigIO = None  # type: ignore
     check_setup_status = None  # type: ignore
     open_settings_window = None  # type: ignore
 
@@ -1354,57 +1355,138 @@ def main():
             )
             open_settings()
 
-    # แถว Settings + webhook
-    lbl0 = ttk.Label(root, text="Setup:", font=("", 9, "bold"))
-    lbl0.pack(anchor=tk.W, padx=10, pady=(6, 0))
     btn_frame0 = ttk.Frame(root)
-    btn_frame0.pack(fill=tk.X, padx=8, pady=2)
+    btn_frame0.pack(fill=tk.X, padx=8, pady=(6, 2))
     btn_settings = ttk.Button(btn_frame0, text="Settings…", command=open_settings)
     btn_settings.pack(side=tk.LEFT, padx=(0, 8))
     btn_webhook = ttk.Button(btn_frame0, text="ເລີ່ມ Webhook + ngrok", command=toggle_webhook)
     btn_webhook.pack(side=tk.LEFT, padx=(0, 8))
-    ttk.Label(
-        btn_frame0,
-        text="Sheet / เพจ·Token / Webhook·ngrok",
-        foreground="#555",
-    ).pack(side=tk.LEFT)
 
     # ປຸ່ມສົ່ງ/ແຈ້ງ — Token ກ່ອນ ແລ້ວ Playwright (ປຸ່ມສົ່ງບິນຖ່າຍຮູບກ່ອນ)
-    lbl1 = ttk.Label(root, text="ສົ່ງ / ແຈ້ງ:", font=("", 9, "bold"))
-    lbl1.pack(anchor=tk.W, padx=10, pady=(6, 0))
+
     btn_frame = ttk.Frame(root)
     btn_frame.pack(fill=tk.X, padx=8, pady=2)
     btn_helper = ttk.Button(btn_frame, text="ຕົວຊ່ວຍສົ່ງບິນ", command=run_helper)
     btn_helper.pack(side=tk.LEFT, padx=(0, 8))
     btn_send_bill = ttk.Button(btn_frame, text="ສົ່ງບິນ", command=run_send_bill)
     btn_send_bill.pack(side=tk.LEFT, padx=(0, 8))
-    btn_notify_delivered = ttk.Button(
+
+    def _edit_notify_message(kind: str, title: str) -> None:
+        if ConfigIO is None:
+            messagebox.showerror("ຜິດພາດ", "ບໍ່ພົບ settings module", parent=root)
+            return
+        io = ConfigIO(PROJECT_ROOT)
+        msgs = io.load_notify_messages()
+        win = tk.Toplevel(root)
+        win.title(f"ແກ້ໄຂຂໍ້ຄວາມ — {title}")
+        win.transient(root)
+        win.resizable(True, True)
+        win.geometry("480x220")
+        ttk.Label(win, text=f"ຂໍ້ຄວາມທີ່ສົ່ງໃຫ້ລູກຄ້າ ({title})").pack(
+            anchor=tk.W, padx=10, pady=(10, 4)
+        )
+        txt = tk.Text(win, wrap=tk.WORD, height=6, font=("Segoe UI", 10))
+        txt.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
+        txt.insert("1.0", msgs.get(kind) or "")
+        btn_row = ttk.Frame(win)
+        btn_row.pack(fill=tk.X, padx=10, pady=(4, 10))
+
+        def _save() -> None:
+            body = txt.get("1.0", "end-1c")
+            current = io.load_notify_messages()
+            current[kind] = body
+            io.save_notify_messages(
+                current.get("delivered") or "",
+                current.get("stock_out") or "",
+                current.get("stock_available") or "",
+            )
+            win.destroy()
+            messagebox.showinfo("ບັນທຶກ", "ບັນທຶກຂໍ້ຄວາມແລ້ວ", parent=root)
+
+        ttk.Button(btn_row, text="ບັນທຶກ", command=_save).pack(side=tk.RIGHT)
+        ttk.Button(btn_row, text="ຍົກເລີກ", command=win.destroy).pack(side=tk.RIGHT, padx=(0, 8))
+        win.grab_set()
+        txt.focus_set()
+
+    try:
+        style.configure("Notify.TButton", padding=(8, 3, 18, 3))
+    except Exception:
+        pass
+
+    def _notify_button_group(parent, label: str, kind: str, token_flag: str, pw_flag: str):
+        wrap = ttk.Frame(parent)
+        action = ttk.Button(
+            wrap,
+            text=label,
+            style="Notify.TButton",
+            command=lambda: run_notify_pipeline(kind, token_flag, pw_flag, label),
+        )
+        action.pack()
+
+        kebab = tk.Canvas(wrap, width=10, height=22, highlightthickness=0, bd=0)
+        kebab.place(in_=action, relx=1.0, rely=0.5, x=-5, anchor="e")
+        hovering = {"on": False}
+
+        def _button_bg(active: bool = False) -> str:
+            try:
+                st = ("active",) if active else ()
+                return style.lookup("TButton", "background", st) or "SystemButtonFace"
+            except Exception:
+                return "SystemButtonFace"
+
+        def _draw_dots() -> None:
+            kebab.delete("dots")
+            kebab.configure(bg=_button_bg(hovering["on"]))
+            if not hovering["on"]:
+                return
+            kebab.update_idletasks()
+            w = int(kebab.winfo_width() or 10)
+            h = int(kebab.winfo_height() or 22)
+            cx = max(w // 2, 5)
+            mid = max(h // 2, 11)
+            r = 1.3
+            gap = 5
+            for y in (mid - gap, mid, mid + gap):
+                kebab.create_oval(
+                    cx - r, y - r, cx + r, y + r, fill="#333333", outline="#333333", tags="dots"
+                )
+
+        def _set_hover(on: bool) -> None:
+            hovering["on"] = on
+            _draw_dots()
+
+        kebab.bind("<Map>", lambda _e: _draw_dots())
+        kebab.bind("<Configure>", lambda _e: _draw_dots())
+        kebab.bind("<Button-1>", lambda _e: _edit_notify_message(kind, label))
+        wrap.bind("<Enter>", lambda _e: _set_hover(True))
+        wrap.bind("<Leave>", lambda _e: _set_hover(False))
+        action.bind("<Enter>", lambda _e: _set_hover(True))
+        kebab.bind("<Enter>", lambda _e: _set_hover(True))
+
+        wrap.pack(side=tk.LEFT, padx=(0, 8))
+        return action
+
+    btn_notify_delivered = _notify_button_group(
         btn_frame,
-        text="ແຈ້ງຮອດແລ້ວ",
-        command=lambda: run_notify_pipeline(
-            "delivered", "--notify-delivered", "--notify-delivered", "ແຈ້ງຮອດແລ້ວ"
-        ),
+        "ແຈ້ງຮອດແລ້ວ",
+        "delivered",
+        "--notify-delivered",
+        "--notify-delivered",
     )
-    btn_notify_delivered.pack(side=tk.LEFT, padx=(0, 8))
-    btn_notify_stock_out = ttk.Button(
+    btn_notify_stock_out = _notify_button_group(
         btn_frame,
-        text="ແຈ້ງສິນຄ້າໝົດ",
-        command=lambda: run_notify_pipeline(
-            "stock_out", "--notify-stock-out", "--notify-stock-out", "ແຈ້ງສິນຄ້າໝົດ"
-        ),
+        "ແຈ້ງສິນຄ້າໝົດ",
+        "stock_out",
+        "--notify-stock-out",
+        "--notify-stock-out",
     )
-    btn_notify_stock_out.pack(side=tk.LEFT, padx=(0, 8))
-    btn_notify_stock_available = ttk.Button(
+    btn_notify_stock_available = _notify_button_group(
         btn_frame,
-        text="ແຈ້ງມີສິນຄ້າ",
-        command=lambda: run_notify_pipeline(
-            "stock_available",
-            "--notify-stock-available",
-            "--notify-stock-available",
-            "ແຈ້ງມີສິນຄ້າ",
-        ),
+        "ແຈ້ງມີສິນຄ້າ",
+        "stock_available",
+        "--notify-stock-available",
+        "--notify-stock-available",
     )
-    btn_notify_stock_available.pack(side=tk.LEFT)
     action_buttons.extend(
         [
             btn_send_bill,
@@ -1415,8 +1497,6 @@ def main():
     )
 
     # ປຸ່ມແຖວ 3: Auto cleanup bill_images
-    lbl3 = ttk.Label(root, text="Maintenance:", font=("", 9, "bold"))
-    lbl3.pack(anchor=tk.W, padx=10, pady=(8, 0))
     btn_frame3 = ttk.Frame(root)
     btn_frame3.pack(fill=tk.X, padx=8, pady=2)
     btn_auto_cleanup_toggle = ttk.Button(

@@ -62,6 +62,25 @@ NOTIFY_STOCK_AVAILABLE_MESSAGE = "ມີເຄື່ອງແລ້ວເດີ 
 NOTIFY_STOCK_OUT_RESULT = "📢ແຈ້ງສິນຄ້າໝົດແລ້ວ"
 NOTIFY_STOCK_AVAILABLE_RESULT = "🔔ແຈ້ງມີສິນຄ້າແລ້ວ"
 
+
+def _notify_message_for(kind: str) -> str:
+    defaults = {
+        "delivered": NOTIFY_DELIVERED_MESSAGE,
+        "stock_out": NOTIFY_STOCK_OUT_MESSAGE,
+        "stock_available": NOTIFY_STOCK_AVAILABLE_MESSAGE,
+    }
+    fallback = defaults.get(kind) or ""
+    try:
+        from pathlib import Path as _Path
+
+        from settings.config_io import ConfigIO
+
+        msgs = ConfigIO(_Path(SCRIPT_DIR)).load_notify_messages()
+        return str(msgs.get(kind) or "").strip() or fallback
+    except Exception:
+        return fallback
+
+
 ORDER_HEADERS = ("Order", "order", "Order ID", "Order Id", "OrderID")
 TRACKING_HEADERS = ("Tracking ID", "tracking_id", "Tracking Id", "เลขพัสดุ")
 PAGE_NAME_HEADERS = ("ຊ່ອງທາງ", "ช่องทาง", "Channel", "channel", "Page", "page")
@@ -531,19 +550,19 @@ def main_notify_mode(mode: str, dry_run: bool = False):
     if mode == "delivered":
         mode_title = "แจ้งถึงแล้ว (notify-delivered)"
         required_statuses = NOTIFY_DELIVERED_STATUSES
-        notify_message = NOTIFY_DELIVERED_MESSAGE
+        notify_message = _notify_message_for("delivered")
         result_value = "💬ແຈ້ງຮອດແລ້ວ"
         empty_hint = "❌ ไม่พบแถวที่ต้องแจ้ง (สถานะคอลัมน์ A ไม่ตรง 🏁 ຫรือ 💬 ตามโหมดแจ้งถึง)"
     elif mode == "stock_out":
         mode_title = "แจ้งสินค้าหมด (notify-stock-out)"
         required_statuses = NOTIFY_STOCK_OUT_STATUSES
-        notify_message = NOTIFY_STOCK_OUT_MESSAGE
+        notify_message = _notify_message_for("stock_out")
         result_value = NOTIFY_STOCK_OUT_RESULT
         empty_hint = "❌ ไม่พบแถวที่ต้องแจ้ง (สถานะคอลัมน์ A ไม่ตรง 🗑️ ຫรือ ⏳)"
     elif mode == "stock_available":
         mode_title = "แจ้งมีสินค้า (notify-stock-available)"
         required_statuses = NOTIFY_STOCK_AVAILABLE_STATUSES
-        notify_message = NOTIFY_STOCK_AVAILABLE_MESSAGE
+        notify_message = _notify_message_for("stock_available")
         result_value = NOTIFY_STOCK_AVAILABLE_RESULT
         empty_hint = "❌ ไม่พบแถวที่ต้องแจ้ง (สถานะคอลัมน์ A ไม่ตรง 📢ແຈ້ງສິນຄ້າໝົດແລ້ວ)"
     else:

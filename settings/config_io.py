@@ -47,6 +47,18 @@ PAGE_REPLY_TEXT_KEYS = (
     "order_reply",
 )
 
+DEFAULT_NOTIFY_MESSAGES = {
+    "delivered": "ຮອດແລ້ວເດີໄປຮັບເຄື່ອງແດ່ເຈົ້າ",
+    "stock_out": "ເຄື່ອງເມິດແລ້ວເດີ ສາມາດຍົກເລີກ ຫຼື ຖ້າອີກ 1 ທິດເຄື່ອງມາຮອດເຮົາ ຫຼຸດລາຄາໃຫ້",
+    "stock_available": "ມີເຄື່ອງແລ້ວເດີ ຖ້າຍັງຮັບແຈ້ງເດີ ເຮົາຈະລົດລາຄາໃຫ້ຕາມທີ່ແຈ້ງໄວ້",
+}
+
+NOTIFY_MESSAGE_FILE_KEYS = {
+    "delivered": "notify_delivered_message",
+    "stock_out": "notify_stock_out_message",
+    "stock_available": "notify_stock_available_message",
+}
+
 PAGE_MEDIA_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 PAGE_MEDIA_VIDEO_EXT = {".mp4", ".mov", ".m4v", ".webm"}
 PAGE_MEDIA_ALL_EXT = PAGE_MEDIA_IMAGE_EXT | PAGE_MEDIA_VIDEO_EXT
@@ -352,6 +364,19 @@ class ConfigIO:
                 data.get("facebook_user_data_dir") or "no_api_send_bill/browser_profile"
             ),
             "hal_user_data_dir": str(data.get("hal_user_data_dir") or "hal_browser_profile"),
+            "notify_delivered_message": str(
+                data.get("notify_delivered_message") or DEFAULT_NOTIFY_MESSAGES["delivered"]
+            ).strip()
+            or DEFAULT_NOTIFY_MESSAGES["delivered"],
+            "notify_stock_out_message": str(
+                data.get("notify_stock_out_message") or DEFAULT_NOTIFY_MESSAGES["stock_out"]
+            ).strip()
+            or DEFAULT_NOTIFY_MESSAGES["stock_out"],
+            "notify_stock_available_message": str(
+                data.get("notify_stock_available_message")
+                or DEFAULT_NOTIFY_MESSAGES["stock_available"]
+            ).strip()
+            or DEFAULT_NOTIFY_MESSAGES["stock_available"],
         }
 
     def load_webhook_fields(self) -> Dict[str, str]:
@@ -437,6 +462,31 @@ class ConfigIO:
         self.save_json(self.user_settings_path, us)
         abs_hal = str(self.resolve_user_data_path(hal_stored))
         self.merge_dotenv({"HAL_USER_DATA_DIR": abs_hal})
+
+    def load_notify_messages(self) -> Dict[str, str]:
+        us = self.load_user_settings()
+        return {
+            kind: str(us.get(file_key) or DEFAULT_NOTIFY_MESSAGES[kind])
+            for kind, file_key in NOTIFY_MESSAGE_FILE_KEYS.items()
+        }
+
+    def save_notify_messages(
+        self,
+        delivered: str,
+        stock_out: str,
+        stock_available: str,
+    ) -> None:
+        us = self.load_user_settings()
+        us["notify_delivered_message"] = (delivered or "").strip() or DEFAULT_NOTIFY_MESSAGES[
+            "delivered"
+        ]
+        us["notify_stock_out_message"] = (stock_out or "").strip() or DEFAULT_NOTIFY_MESSAGES[
+            "stock_out"
+        ]
+        us["notify_stock_available_message"] = (
+            stock_available or ""
+        ).strip() or DEFAULT_NOTIFY_MESSAGES["stock_available"]
+        self.save_json(self.user_settings_path, us)
 
     # --- carrier (.env) ---
 

@@ -299,17 +299,33 @@ def _ensure_manual_reply_mode(page: Page) -> dict:
     return out
 
 
+def _notify_message_for(kind: str) -> str:
+    defaults = {
+        "delivered": NOTIFY_DELIVERED_MESSAGE,
+        "stock_out": NOTIFY_STOCK_OUT_MESSAGE,
+        "stock_available": NOTIFY_STOCK_AVAILABLE_MESSAGE,
+    }
+    fallback = defaults.get(kind) or ""
+    try:
+        from settings.config_io import ConfigIO
+
+        msgs = ConfigIO(KIT_ROOT).load_notify_messages()
+        return str(msgs.get(kind) or "").strip() or fallback
+    except Exception:
+        return fallback
+
+
 def _resolve_notify_mode(mode: Optional[str]) -> tuple[bool, str, str]:
     """
     Resolve notify mode configuration.
     Returns: (is_notify_mode, mode_label, notify_message)
     """
     if mode == "delivered":
-        return True, "ແຈ້ງຮອດແລ້ວ", NOTIFY_DELIVERED_MESSAGE
+        return True, "ແຈ້ງຮອດແລ້ວ", _notify_message_for("delivered")
     if mode == "stock_out":
-        return True, "ແຈ້ງສິນຄ້າໝົດ", NOTIFY_STOCK_OUT_MESSAGE
+        return True, "ແຈ້ງສິນຄ້າໝົດ", _notify_message_for("stock_out")
     if mode == "stock_available":
-        return True, "ແຈ້ງມີສິນຄ້າ", NOTIFY_STOCK_AVAILABLE_MESSAGE
+        return True, "ແຈ້ງມີສິນຄ້າ", _notify_message_for("stock_available")
     return False, "ส่งบิล", ""
 
 # ---------------------------------------------------------------------------

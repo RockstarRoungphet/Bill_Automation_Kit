@@ -2,5 +2,8 @@
   "ngrok_domain": "your-subdomain.ngrok-free.dev",
   "webhook_port": 5000,
   "facebook_user_data_dir": "no_api_send_bill/browser_profile",
-  "hal_user_data_dir": "hal_browser_profile"
+  "hal_user_data_dir": "hal_browser_profile",
+  "notify_delivered_message": "ຮອດແລ້ວເດີໄປຮັບເຄື່ອງແດ່ເຈົ້າ",
+  "notify_stock_out_message": "ເຄື່ອງເມິດແລ້ວເດີ ສາມາດຍົກເລີກ ຫຼື ຖ້າອີກ 1 ທິດເຄື່ອງມາຮອດເຮົາ ຫຼຸດລາຄາໃຫ້",
+  "notify_stock_available_message": "ມີເຄື່ອງແລ້ວເດີ ຖ້າຍັງຮັບແຈ້ງເດີ ເຮົາຈະລົດລາຄາໃຫ້ຕາມທີ່ແຈ້ງໄວ້"
 }
