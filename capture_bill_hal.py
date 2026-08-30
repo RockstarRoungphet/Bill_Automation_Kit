@@ -40,7 +40,7 @@ DEFAULT_BILLS_DIR = "bill_images"
 ENV_FILE = ".env"
 SHEET_CONFIG_PATH = SCRIPT_DIR / "no_api_send_bill_manual" / "config" / "sheet_config.json"
 TRACKING_HEADERS = ("Tracking ID", "tracking_id", "Tracking Id", "เลขพัสดุ")
-FILTER_COL_A_VALUE = "📦ລໍຈັດສົ່ງ"
+FILTER_COL_A_VALUE = "📦ລໍສົ່ງບິນ"
 COL_A_INDEX = 0
 # คอลัมน์ G ใน Excel = index 6 (carrier)
 COL_G_INDEX = 6
@@ -140,10 +140,11 @@ def read_tracking_ids_from_sheet() -> List[str]:
         track_col = _find_col(header, TRACKING_HEADERS, COL_Z_INDEX)
         for cells in all_rows[1:]:
             cells = [str(x).strip() for x in cells]
+            a = cells[COL_A_INDEX] if COL_A_INDEX < len(cells) else ""
             need_len = max(COL_A_INDEX, COL_G_INDEX, track_col)
             if len(cells) <= need_len:
                 continue
-            if (cells[COL_A_INDEX] if COL_A_INDEX < len(cells) else "") != FILTER_COL_A_VALUE:
+            if a != FILTER_COL_A_VALUE:
                 continue
             carrier = cells[COL_G_INDEX] if COL_G_INDEX < len(cells) else ""
             if carrier != SHEET_CARRIER_HAL:
@@ -663,8 +664,16 @@ def main() -> None:
     _load_dotenv(SCRIPT_DIR / ENV_FILE)
     tracking_ids, bills_dir, show_browser, parallel_pages = parse_args(sys.argv[1:])
     if not tracking_ids:
-        print("ไม่มี ID")
-        sys.exit(1)
+        print("ℹ️ HAL: ไม่มีรายการให้ถ่าย (ไม่มี Tracking ID ຮຸ່ງອາລຸນ ในชีต)")
+        sys.exit(0)
+
+    already = [tid for tid in tracking_ids if (bills_dir / f"{tid}.png").is_file()]
+    tracking_ids = [tid for tid in tracking_ids if tid not in set(already)]
+    if already:
+        print(f"ℹ️ ຂ້າມ {len(already)} ລາຍການທີ່ມີຮູບໃນ {bills_dir}/ ແລ້ວ")
+    if not tracking_ids:
+        print("✅ ມີຮູບຄົບແລ້ວ ບໍ່ຕ້ອງຖ່າຍໃໝ່")
+        sys.exit(0)
 
     bills_dir.mkdir(parents=True, exist_ok=True)
     print(f"HAL PNG capture (map-then-capture parallel): processing {len(tracking_ids)} bills → {bills_dir}")

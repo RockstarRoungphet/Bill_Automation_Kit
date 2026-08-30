@@ -2,7 +2,7 @@
 """
 อ่าน CSV export จาก Google Sheet หรือเชื่อมต่อ Google Sheet โดยตรง
 ดึงข้อมูล Order, ชื่อเพจ (Column I), Tracking ID (Column Z)
-- คอลัมน์ A (index 0) = สถานะ (ต้องเป็น "📦ລໍຈັດສົ່ງ" เท่านั้น)
+- คอลัมน์ A (index 0) = สถานะ (ต้องเป็น "📦ລໍສົ່ງບິນ" เท่านั้น)
 - คอลัมน์ D (index 3) = Order
 - คอลัมน์ I (index 8) = ชื่อเพจ
 - คอลัมน์ G (index 6) = ขนส่ง (ອານຸສິດ / ຮຸ່ງອາລຸນ)
@@ -33,7 +33,7 @@ TRACKING_COL_INDEX = 25
 CARRIER_COL_INDEX = 6  # Column G: ขนส่ง
 
 # สถานะที่ต้องเป็น (คอลัมน์ A)
-REQUIRED_STATUS = "📦ລໍຈັດສົ່ງ"
+REQUIRED_STATUS = "📦ລໍສົ່ງບິນ"
 REQUIRED_STATUS_DELIVERED = "🏁ຮອດປາຍທາງແລ້ວ"
 # คอลัมน์ A = แจ้งถึงซ้ำ (เตือนลูกค้าอีกครั้ง)
 REQUIRED_STATUS_DELIVERED_FOLLOWUP = "💬ແຈ້ງຮອດແລ້ວ"
@@ -135,7 +135,7 @@ def read_rows_from_csv(csv_path: str) -> List[Tuple[str, str, str, str]]:
     """
     อ่าน CSV และคืนรายการ (order_id, page_name, tracking_id, carrier)
     กรองเฉพาะแถวที่:
-    - คอลัมน์ A (สถานะ) = "📦ລໍຈັດສົ່ງ"
+    - คอลัมน์ A (สถานะ) = "📦ລໍສົ່ງບິນ"
     - มี tracking_id และยาวอย่างน้อย 10 ตัวอักษร
     """
     rows: List[Tuple[str, str, str, str]] = []
@@ -190,7 +190,7 @@ def read_rows_from_google_sheet(
     อ่าน Google Sheet โดยตรง (ต้องแชร์ Sheet ให้ Service Account แล้ว)
     คืนรายการ (order_id, page_name, tracking_id, carrier) หรือ (order_id, page_name, sheet_name, carrier) เมื่อโหมดแจ้งถึง
 
-    - required_status=None: ใช้ REQUIRED_STATUS (ລໍຈັດສົ່ງ), row_map key = (order_id, tracking_id)
+    - required_status=None: ใช้ REQUIRED_STATUS (ລໍສົ່ງບິນ), row_map key = (order_id, tracking_id)
     - required_status=REQUIRED_STATUS_DELIVERED: ไม่ตรวจสอบคอลัมน์ Z, row_map key = (order_id, sheet_name)
     - required_status=tuple: โหมด text-only ที่กรองสถานะคอลัมน์ A ตามค่าใน tuple
     - customer_name_map: ถ้าส่งมา จะเติม order_id -> customer_name (คอลัมน์ E) สำหรับ fuzzy matching

@@ -3,5 +3,12 @@
   "promo_send_before_hours": 23,
   "promo_auto_send_disabled": true,
   "messenger_auto_replies_disabled": false,
-  "generic_reply_disabled": true
+  "generic_reply_disabled": true,
+  "TeenFashion": {
+    "welcome_text": "",
+    "price_reply": "",
+    "promo_text": "",
+    "cod_reply": "",
+    "order_reply": ""
+  }
 }

@@ -46,7 +46,7 @@ TRACKING_COL = 25    # Z: Tracking ID
 CARRIER_COL = 6      # G: ขนส่ง
 
 SEND_DATE_COL_LETTER = "R"
-REQUIRED_STATUS = "📦ລໍຈັດສົ່ງ"
+REQUIRED_STATUS = "📦ລໍສົ່ງບິນ"
 
 REQUIRED_STATUS_DELIVERED = "🏁ຮອດປາຍທາງແລ້ວ"
 # คอลัมน์ A = สถานะแจ้งถึงซ้ำ (หลังแจ้งครั้งแรกแล้วลูกค้ายังไม่รับ)
@@ -741,7 +741,7 @@ def main():
         rows = read_rows_from_csv(csv_path)
 
     if not rows:
-        print("❌ ไม่พบแถวที่ต้องส่ง (สถานะ 📦ລໍຈັດສົ່ງ + มี Tracking ID + ยังไม่ส่ง)")
+        print("❌ ไม่พบแถวที่ต้องส่ง (สถานะ 📦ລໍສົ່ງບິນ + มี Tracking ID + ยังไม่ส่ง)")
         sys.exit(0)
 
     print(f"📊 พบ {len(rows)} รายการที่ต้องส่ง")

@@ -3,6 +3,7 @@
 Launcher UI — ໜ້າຕ່າງສຳລັບຮັນ run_manual.py ແລະ send_bill_signal.ahk
 ສະແດງສະຖານະຈາກ run_manual.py ແບບ real-time
 """
+import ctypes
 import os
 import queue
 import shutil
@@ -18,6 +19,13 @@ except ImportError:
     print("ຕ້ອງໃຊ້ Python ທີ່ມີ tkinter (ໃນ Windows ມັກຈະມີໃຫ້ແລ້ວ)")
     sys.exit(1)
 
+try:
+    import pystray
+    from PIL import Image
+except ImportError:
+    pystray = None  # type: ignore
+    Image = None  # type: ignore
+
 PROJECT_DIR = Path(__file__).resolve().parent
 RUN_MANUAL = PROJECT_DIR / "run_manual.py"
 AHK_SCRIPT = PROJECT_DIR / "send_bill_signal.ahk"
@@ -28,6 +36,221 @@ PROJECT_ROOT = PROJECT_DIR.parent
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+WINDOW_TITLE = "Bill Automation Kit"
+_INSTANCE_MUTEX = None
+_MUTEX_NAME = "Local\\BillAutomationKit_Launcher"
+
+
+def _activate_existing_window(title: str) -> bool:
+    if sys.platform != "win32":
+        return False
+    user32 = ctypes.windll.user32
+    hwnd = user32.FindWindowW(None, title)
+    if not hwnd:
+        return False
+    SW_RESTORE = 9
+    user32.ShowWindow(hwnd, SW_RESTORE)
+    user32.SetForegroundWindow(hwnd)
+    return True
+
+
+def _ensure_single_instance() -> bool:
+    """Keep one launcher. If already running, show that window and return False."""
+    global _INSTANCE_MUTEX
+    if sys.platform != "win32":
+        return True
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    handle = kernel32.CreateMutexW(None, False, _MUTEX_NAME)
+    _INSTANCE_MUTEX = handle
+    if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        _activate_existing_window(WINDOW_TITLE)
+        return False
+    return True
+
+
+class _Win32Tray:
+    """Windows notification-area icon (taskbar ^ overflow). No extra pip package."""
+
+    WM_TRAY = 0x0400 + 20
+    ID_SHOW = 1001
+    ID_EXIT = 1002
+
+    def __init__(self, tooltip: str, ico_path: Path, on_show, on_exit, on_click=None):
+        self.tooltip = tooltip
+        self.ico_path = ico_path
+        self.on_show = on_show
+        self.on_exit = on_exit
+        self.on_click = on_click or on_show
+        self._hwnd = None
+        self._ready = threading.Event()
+        self._wndproc = None
+        self._nid = None
+
+    def start(self) -> bool:
+        threading.Thread(target=self._run, daemon=True).start()
+        if not self._ready.wait(timeout=3):
+            return False
+        return bool(self._hwnd)
+
+    def stop(self) -> None:
+        if self._hwnd:
+            try:
+                ctypes.windll.user32.PostMessageW(self._hwnd, 0x0010, 0, 0)  # WM_CLOSE
+            except Exception:
+                pass
+
+    def _run(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        shell32 = ctypes.windll.shell32
+        kernel32 = ctypes.windll.kernel32
+
+        LRESULT = ctypes.c_ssize_t
+        WPARAM = ctypes.c_size_t
+        LPARAM = ctypes.c_ssize_t
+        WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, WPARAM, LPARAM)
+        user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, WPARAM, LPARAM]
+        user32.DefWindowProcW.restype = LRESULT
+        user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+        user32.DispatchMessageW.restype = LRESULT
+
+        class WNDCLASS(ctypes.Structure):
+            _fields_ = [
+                ("style", wintypes.UINT),
+                ("lpfnWndProc", WNDPROC),
+                ("cbClsExtra", ctypes.c_int),
+                ("cbWndExtra", ctypes.c_int),
+                ("hInstance", wintypes.HINSTANCE),
+                ("hIcon", wintypes.HICON),
+                ("hCursor", wintypes.HANDLE),
+                ("hbrBackground", wintypes.HBRUSH),
+                ("lpszMenuName", wintypes.LPCWSTR),
+                ("lpszClassName", wintypes.LPCWSTR),
+            ]
+
+        class NOTIFYICONDATA(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", wintypes.DWORD),
+                ("hWnd", wintypes.HWND),
+                ("uID", wintypes.UINT),
+                ("uFlags", wintypes.UINT),
+                ("uCallbackMessage", wintypes.UINT),
+                ("hIcon", wintypes.HICON),
+                ("szTip", wintypes.WCHAR * 128),
+            ]
+
+        NIF_MESSAGE, NIF_ICON, NIF_TIP = 0x01, 0x02, 0x04
+        NIM_ADD, NIM_DELETE = 0, 2
+        WM_LBUTTONUP, WM_RBUTTONUP = 0x0202, 0x0205
+        WM_DESTROY, WM_CLOSE, WM_COMMAND = 0x0002, 0x0010, 0x0111
+        TPM_RIGHTBUTTON, TPM_RETURNCMD = 0x0002, 0x0100
+
+        def _load_icon():
+            if self.ico_path.is_file():
+                h = user32.LoadImageW(
+                    None,
+                    str(self.ico_path),
+                    1,
+                    0,
+                    0,
+                    0x00000010 | 0x00000040,
+                )
+                if h:
+                    return h
+            return user32.LoadIconW(None, ctypes.c_wchar_p(32512)) or user32.LoadIconW(
+                None, 32512
+            )
+
+        hicon = _load_icon()
+        hinst = kernel32.GetModuleHandleW(None)
+        class_name = "BillKitTrayWnd"
+
+        def _wndproc(hwnd, msg, wparam, lparam):
+            if msg == self.WM_TRAY:
+                if lparam == WM_LBUTTONUP:
+                    self.on_click()
+                    return 0
+                if lparam == WM_RBUTTONUP:
+                    menu = user32.CreatePopupMenu()
+                    user32.AppendMenuW(menu, 0, self.ID_SHOW, "Show")
+                    user32.AppendMenuW(menu, 0, self.ID_EXIT, "Exit")
+                    pt = wintypes.POINT()
+                    user32.GetCursorPos(ctypes.byref(pt))
+                    user32.SetForegroundWindow(hwnd)
+                    cmd = user32.TrackPopupMenu(
+                        menu,
+                        TPM_RIGHTBUTTON | TPM_RETURNCMD,
+                        pt.x,
+                        pt.y,
+                        0,
+                        hwnd,
+                        None,
+                    )
+                    user32.DestroyMenu(menu)
+                    if cmd == self.ID_SHOW:
+                        self.on_show()
+                    elif cmd == self.ID_EXIT:
+                        self.on_exit()
+                    return 0
+            if msg == WM_COMMAND:
+                if wparam == self.ID_SHOW:
+                    self.on_show()
+                elif wparam == self.ID_EXIT:
+                    self.on_exit()
+                return 0
+            if msg in (WM_CLOSE, WM_DESTROY):
+                if self._nid is not None:
+                    try:
+                        shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(self._nid))
+                    except Exception:
+                        pass
+                    self._nid = None
+                if msg == WM_CLOSE:
+                    user32.DestroyWindow(hwnd)
+                    return 0
+                user32.PostQuitMessage(0)
+                return 0
+            return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+        self._wndproc = WNDPROC(_wndproc)
+        wc = WNDCLASS()
+        wc.lpfnWndProc = self._wndproc
+        wc.hInstance = hinst
+        wc.lpszClassName = class_name
+        if not user32.RegisterClassW(ctypes.byref(wc)):
+            if ctypes.GetLastError() not in (0, 1410):  # already registered
+                self._ready.set()
+                return
+
+        hwnd = user32.CreateWindowExW(
+            0, class_name, "BillKitTray", 0, 0, 0, 0, 0, None, None, hinst, None
+        )
+        self._hwnd = hwnd
+        if not hwnd:
+            self._ready.set()
+            return
+
+        nid = NOTIFYICONDATA()
+        nid.cbSize = ctypes.sizeof(NOTIFYICONDATA)
+        nid.hWnd = hwnd
+        nid.uID = 1
+        nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
+        nid.uCallbackMessage = self.WM_TRAY
+        nid.hIcon = hicon
+        nid.szTip = self.tooltip[:127]
+        self._nid = nid
+        shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(nid))
+        self._ready.set()
+
+        msg = wintypes.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+
 
 try:
     from settings.config_io import ConfigIO, check_setup_status
@@ -342,19 +565,13 @@ def capture_all_worker(commands, cwd: Path, env: dict, out_queue: queue.Queue):
                 bufsize=1,
                 env=env,
             )
-            saw_hal_no_id = False
             for line in proc.stdout:
                 decoded = line.decode("utf-8", errors="replace")
-                if title == "Capture HAL" and "ไม่มี ID" in decoded:
-                    saw_hal_no_id = True
                 out_queue.put(("capture_all", decoded))
             proc.wait()
             if proc.returncode != 0:
                 any_failed = True
-                if title == "Capture HAL" and saw_hal_no_id:
-                    out_queue.put(("capture_all", "ℹ️ HAL: ไม่มี ID (ไม่มีรายการให้ถ่าย)\n"))
-                else:
-                    out_queue.put(("capture_all", f"❌ {title} failed (exit {proc.returncode})\n"))
+                out_queue.put(("capture_all", f"❌ {title} ไม่สำเร็จ (exit {proc.returncode})\n"))
                 # ไม่ break — รันขั้นถัดไป (เช่น HAL หลัง Anousith ไม่มีแถวອານຸສິດ)
         if any_failed:
             out_queue.put(
@@ -459,6 +676,9 @@ def _run_sync_command(cmd, cwd: Path | None = None):
 
 
 def main():
+    if not _ensure_single_instance():
+        return
+
     out_queue = queue.Queue()
     process_ref = {
         "proc": None, "ahk": None,
@@ -471,9 +691,9 @@ def main():
     action_buttons: list = []
 
     root = tk.Tk()
-    root.title("ໜ້າຕ່າງຄວບຄຸມ")
-    root.minsize(680, 460)
-    root.geometry("720x500")
+    root.title(WINDOW_TITLE)
+    root.minsize(360, 320)
+    root.geometry("720x480")
     root.configure(bg="white")
     if sys.platform == "win32" and ICON_PATH.is_file():
         try:
@@ -481,17 +701,54 @@ def main():
         except Exception:
             pass
 
+    _WHITE = "#ffffff"
+    _TEXT = "#202124"
+    _HOVER = "#f1f3f4"
     style = ttk.Style(root)
     try:
-        if sys.platform == "win32":
-            # Keep native rounded button look on Windows.
-            style.theme_use("vista")
+        style.theme_use("clam")
     except Exception:
         pass
-    style.configure("TFrame", background="white")
-    style.configure("TLabel", background="white")
-    style.configure("Section.TLabel", background="white")
-    style.configure("TButton", padding=(8, 3))
+    style.configure("TFrame", background=_WHITE)
+    style.configure("TLabel", background=_WHITE, foreground=_TEXT)
+    style.configure("Section.TLabel", background=_WHITE, foreground=_TEXT)
+    style.configure(
+        "TButton",
+        background=_WHITE,
+        foreground=_TEXT,
+        bordercolor=_WHITE,
+        lightcolor=_WHITE,
+        darkcolor=_WHITE,
+        relief="flat",
+        borderwidth=0,
+        padding=(4, 2),
+        focuscolor=_WHITE,
+    )
+    style.map(
+        "TButton",
+        background=[("active", _HOVER), ("pressed", _HOVER)],
+        bordercolor=[("active", _HOVER), ("pressed", _HOVER)],
+        relief=[("pressed", "flat"), ("active", "flat")],
+    )
+    try:
+        style.layout(
+            "TButton",
+            [
+                (
+                    "Button.padding",
+                    {
+                        "sticky": "nswe",
+                        "children": [("Button.label", {"sticky": "nswe"})],
+                    },
+                )
+            ],
+        )
+    except tk.TclError:
+        pass
+    style.configure("Notify.TButton", padding=(6, 2, 16, 2))
+
+    toolbar = ttk.Frame(root)
+    toolbar.pack(side=tk.TOP, fill=tk.X, padx=4, pady=2)
 
     # ພື້ນທີ່ສະແດງສະຖານະ
     status_frame = ttk.Frame(root)
@@ -501,7 +758,8 @@ def main():
     status_text = scrolledtext.ScrolledText(
         status_frame,
         wrap=tk.WORD,
-        height=14,
+        width=1,
+        height=8,
         font=("Consolas", 10),
         bg="white",
         relief=tk.SOLID,
@@ -979,7 +1237,7 @@ def main():
     def _check_webhook_stopped():
         """Reset button when both webhook + ngrok have stopped."""
         if process_ref["webhook"] is None and process_ref["ngrok"] is None:
-            btn_webhook.config(text="ເລີ່ມ Webhook + ngrok")
+            _set_webhook_icon(False)
             append_status("Webhook + ngrok ຢຸດແລ້ວ\n")
 
     def _stop_webhook():
@@ -1077,7 +1335,7 @@ def main():
             _stop_webhook()
             return
 
-        btn_webhook.config(text="ຢຸດ Webhook + ngrok")
+        _set_webhook_icon(True)
         append_status(f"ngrok domain: https://{ngrok_domain}\n")
 
     def run_api_send_bill():
@@ -1208,7 +1466,52 @@ def main():
         except Exception as e:
             append_status(f"ເກີດຜິດພາດ: {e}\n")
 
-    def on_closing():
+    tray_icon = {"icon": None}
+    hiding_to_tray = {"on": False}
+
+    def hide_to_tray() -> None:
+        hiding_to_tray["on"] = True
+        root.withdraw()
+
+    def show_from_tray() -> None:
+        def _show() -> None:
+            hiding_to_tray["on"] = False
+            root.deiconify()
+            root.lift()
+            root.focus_force()
+
+        try:
+            root.after(0, _show)
+        except Exception:
+            _show()
+
+    def toggle_from_tray() -> None:
+        def _toggle() -> None:
+            try:
+                is_shown = root.state() == "normal" and bool(root.winfo_viewable())
+            except tk.TclError:
+                is_shown = False
+            if is_shown:
+                hide_to_tray()
+            else:
+                hiding_to_tray["on"] = False
+                root.deiconify()
+                root.lift()
+                root.focus_force()
+
+        try:
+            root.after(0, _toggle)
+        except Exception:
+            _toggle()
+
+    def quit_launcher() -> None:
+        icon = tray_icon["icon"]
+        if icon is not None:
+            try:
+                icon.stop()
+            except Exception:
+                pass
+            tray_icon["icon"] = None
         for key in process_ref:
             p = process_ref[key]
             if isinstance(p, subprocess.Popen):
@@ -1217,6 +1520,50 @@ def main():
                 except Exception:
                     pass
         root.destroy()
+
+    def exit_app() -> None:
+        try:
+            root.after(0, quit_launcher)
+        except Exception:
+            quit_launcher()
+
+    def on_unmap(event) -> None:
+        if event.widget is not root:
+            return
+        if hiding_to_tray["on"]:
+            return
+        try:
+            if root.state() == "iconic":
+                hide_to_tray()
+        except tk.TclError:
+            pass
+
+    def start_tray() -> None:
+        if sys.platform == "win32":
+            tray = _Win32Tray(
+                "Bill Automation Kit",
+                ICON_PATH,
+                show_from_tray,
+                exit_app,
+                on_click=toggle_from_tray,
+            )
+            if tray.start():
+                tray_icon["icon"] = tray
+                return
+        if pystray is None or Image is None:
+            return
+        try:
+            img = Image.open(ICON_PATH) if ICON_PATH.is_file() else Image.new("RGBA", (16, 16), (32, 32, 32, 255))
+        except Exception:
+            return
+        menu = pystray.Menu(
+            pystray.MenuItem("Show / Hide", lambda: toggle_from_tray(), default=True),
+            pystray.MenuItem("Show", lambda: show_from_tray()),
+            pystray.MenuItem("Exit", lambda: exit_app()),
+        )
+        icon = pystray.Icon("BillAutomationKit", img, "Bill Automation Kit", menu)
+        tray_icon["icon"] = icon
+        threading.Thread(target=icon.run, daemon=True).start()
 
     def query_auto_cleanup_task_status() -> dict:
         if sys.platform != "win32":
@@ -1256,14 +1603,13 @@ def main():
 
     def refresh_auto_cleanup_status():
         state = query_auto_cleanup_task_status()
-        auto_cleanup_status_var.set(state["status_text"])
         if state["installed"] and state["enabled"]:
-            btn_auto_cleanup_toggle.config(text="Disable Auto Cleanup", state=tk.NORMAL)
+            btn_auto_cleanup_toggle.config(text="Auto Cleanup enabled", state=tk.NORMAL)
         elif state["installed"] and not state["enabled"]:
-            btn_auto_cleanup_toggle.config(text="Enable Auto Cleanup", state=tk.NORMAL)
+            btn_auto_cleanup_toggle.config(text="Auto Cleanup disabled", state=tk.NORMAL)
         else:
             btn_auto_cleanup_toggle.config(
-                text="Enable Auto Cleanup",
+                text="Auto Cleanup disabled",
                 state=tk.NORMAL if sys.platform == "win32" else tk.DISABLED,
             )
 
@@ -1355,21 +1701,9 @@ def main():
             )
             open_settings()
 
-    btn_frame0 = ttk.Frame(root)
-    btn_frame0.pack(fill=tk.X, padx=8, pady=(6, 2))
-    btn_settings = ttk.Button(btn_frame0, text="Settings…", command=open_settings)
-    btn_settings.pack(side=tk.LEFT, padx=(0, 8))
-    btn_webhook = ttk.Button(btn_frame0, text="ເລີ່ມ Webhook + ngrok", command=toggle_webhook)
-    btn_webhook.pack(side=tk.LEFT, padx=(0, 8))
+    _btn_pad = {"side": tk.LEFT, "padx": 0}
 
-    # ປຸ່ມສົ່ງ/ແຈ້ງ — Token ກ່ອນ ແລ້ວ Playwright (ປຸ່ມສົ່ງບິນຖ່າຍຮູບກ່ອນ)
-
-    btn_frame = ttk.Frame(root)
-    btn_frame.pack(fill=tk.X, padx=8, pady=2)
-    btn_helper = ttk.Button(btn_frame, text="ຕົວຊ່ວຍສົ່ງບິນ", command=run_helper)
-    btn_helper.pack(side=tk.LEFT, padx=(0, 8))
-    btn_send_bill = ttk.Button(btn_frame, text="ສົ່ງບິນ", command=run_send_bill)
-    btn_send_bill.pack(side=tk.LEFT, padx=(0, 8))
+    # ປຸ່ມແຖວດຽວ: webhook icon → ສົ່ງບິນ → ແຈ້ງ → ຕົວຊ່ວຍ → cleanup → Settings
 
     def _edit_notify_message(kind: str, title: str) -> None:
         if ConfigIO is None:
@@ -1409,7 +1743,7 @@ def main():
         txt.focus_set()
 
     try:
-        style.configure("Notify.TButton", padding=(8, 3, 18, 3))
+        style.configure("Notify.TButton", padding=(6, 2, 16, 2))
     except Exception:
         pass
 
@@ -1423,16 +1757,15 @@ def main():
         )
         action.pack()
 
-        kebab = tk.Canvas(wrap, width=10, height=22, highlightthickness=0, bd=0)
-        kebab.place(in_=action, relx=1.0, rely=0.5, x=-5, anchor="e")
+        kebab = tk.Canvas(wrap, width=10, height=22, highlightthickness=0, bd=0, bg=_WHITE)
         hovering = {"on": False}
 
         def _button_bg(active: bool = False) -> str:
             try:
                 st = ("active",) if active else ()
-                return style.lookup("TButton", "background", st) or "SystemButtonFace"
+                return style.lookup("TButton", "background", st) or _WHITE
             except Exception:
-                return "SystemButtonFace"
+                return _HOVER if active else _WHITE
 
         def _draw_dots() -> None:
             kebab.delete("dots")
@@ -1453,40 +1786,93 @@ def main():
 
         def _set_hover(on: bool) -> None:
             hovering["on"] = on
+            if on:
+                kebab.place(in_=action, relx=1.0, rely=0.5, x=-2, anchor="e")
+            else:
+                kebab.place_forget()
             _draw_dots()
 
-        kebab.bind("<Map>", lambda _e: _draw_dots())
-        kebab.bind("<Configure>", lambda _e: _draw_dots())
         kebab.bind("<Button-1>", lambda _e: _edit_notify_message(kind, label))
         wrap.bind("<Enter>", lambda _e: _set_hover(True))
         wrap.bind("<Leave>", lambda _e: _set_hover(False))
         action.bind("<Enter>", lambda _e: _set_hover(True))
         kebab.bind("<Enter>", lambda _e: _set_hover(True))
 
-        wrap.pack(side=tk.LEFT, padx=(0, 8))
+        wrap.pack(**_btn_pad)
         return action
 
+    webhook_tip = {"text": "ເລີ່ມ Server", "win": None}
+    btn_webhook = ttk.Button(toolbar, text="START", command=toggle_webhook)
+
+    def _set_webhook_icon(running: bool) -> None:
+        btn_webhook.config(text="STOP" if running else "START")
+        webhook_tip["text"] = "ຢຸດ Server" if running else "ເລີ່ມ Server"
+
+    def _webhook_tip_show(_e=None) -> None:
+        if webhook_tip["win"] is not None:
+            return
+        tw = tk.Toplevel(root)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(
+            f"+{btn_webhook.winfo_rootx()}+{btn_webhook.winfo_rooty() + btn_webhook.winfo_height() + 4}"
+        )
+        tk.Label(
+            tw,
+            text=webhook_tip["text"],
+            bg="#ffffe0",
+            fg="#111111",
+            relief=tk.SOLID,
+            borderwidth=1,
+            font=("Segoe UI", 9),
+            padx=6,
+            pady=2,
+        ).pack()
+        webhook_tip["win"] = tw
+
+    def _webhook_tip_hide(_e=None) -> None:
+        tw = webhook_tip["win"]
+        webhook_tip["win"] = None
+        if tw is not None:
+            tw.destroy()
+
+    _set_webhook_icon(False)
+    btn_webhook.bind("<Enter>", _webhook_tip_show)
+    btn_webhook.bind("<Leave>", _webhook_tip_hide)
+    btn_webhook.pack(**_btn_pad)
+
+    btn_send_bill = ttk.Button(toolbar, text="ສົ່ງບິນ", command=run_send_bill)
+    btn_send_bill.pack(**_btn_pad)
     btn_notify_delivered = _notify_button_group(
-        btn_frame,
+        toolbar,
         "ແຈ້ງຮອດແລ້ວ",
         "delivered",
         "--notify-delivered",
         "--notify-delivered",
     )
     btn_notify_stock_out = _notify_button_group(
-        btn_frame,
+        toolbar,
         "ແຈ້ງສິນຄ້າໝົດ",
         "stock_out",
         "--notify-stock-out",
         "--notify-stock-out",
     )
     btn_notify_stock_available = _notify_button_group(
-        btn_frame,
+        toolbar,
         "ແຈ້ງມີສິນຄ້າ",
         "stock_available",
         "--notify-stock-available",
         "--notify-stock-available",
     )
+    btn_helper = ttk.Button(toolbar, text="ຕົວຊ່ວຍສົ່ງບິນ", command=run_helper)
+    btn_helper.pack(**_btn_pad)
+    btn_auto_cleanup_toggle = ttk.Button(
+        toolbar,
+        text="Auto Cleanup disabled",
+        command=toggle_auto_cleanup_task,
+    )
+    btn_auto_cleanup_toggle.pack(**_btn_pad)
+    btn_settings = ttk.Button(toolbar, text="Settings", command=open_settings)
+    btn_settings.pack(**_btn_pad)
     action_buttons.extend(
         [
             btn_send_bill,
@@ -1496,24 +1882,14 @@ def main():
         ]
     )
 
-    # ປຸ່ມແຖວ 3: Auto cleanup bill_images
-    btn_frame3 = ttk.Frame(root)
-    btn_frame3.pack(fill=tk.X, padx=8, pady=2)
-    btn_auto_cleanup_toggle = ttk.Button(
-        btn_frame3,
-        text="Enable Auto Cleanup",
-        command=toggle_auto_cleanup_task,
-    )
-    btn_auto_cleanup_toggle.pack(side=tk.LEFT, padx=(0, 8))
-    auto_cleanup_status_var = tk.StringVar(value="Auto cleanup: checking...")
-    lbl_auto_cleanup_status = ttk.Label(btn_frame3, textvariable=auto_cleanup_status_var)
-    lbl_auto_cleanup_status.pack(side=tk.LEFT)
-
     refresh_auto_cleanup_status()
 
     root.after(400, maybe_first_run_settings)
 
-    root.protocol("WM_DELETE_WINDOW", on_closing)
+    start_tray()
+    if tray_icon["icon"] is not None:
+        root.bind("<Unmap>", on_unmap)
+    root.protocol("WM_DELETE_WINDOW", quit_launcher)
     root.mainloop()
 
 

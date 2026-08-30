@@ -4705,7 +4705,7 @@ def send_bill_from_sheet(
 ) -> None:
     """ส่งบิลจาก Google Sheet โดยตรง (ต้องแชร์ Sheet ให้ Service Account แล้ว)
     ถ้า notify_delivered=True กรองคอลัมน์ A = 🏁ຮອດປາຍທາງແລ້ວ ຫຼື 💬ແຈ້ງຮອດແລ້ວ ส่งข้อความแจ้งถึง แล้วบันทึก Column V
-    มิฉะนั้นกรอง ລໍຈັດສົ່ງ หลังส่งสำเร็จบันทึกวันที่ลง Column R
+    มิฉะนั้นกรอง ລໍສົ່ງບິນ หลังส่งสำเร็จบันทึกวันที่ลง Column R
     """
     sys.path.insert(0, str(SCRIPT_DIR))
     from read_sheet import (

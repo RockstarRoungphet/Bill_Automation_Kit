@@ -151,18 +151,56 @@ class SettingsWindow:
         style.configure("TFrame", background=_WHITE)
         style.configure("TLabel", background=_WHITE, foreground=_TEXT)
         style.configure("TCheckbutton", background=_WHITE, foreground=_TEXT)
-        style.configure("TNotebook", background=_WHITE, borderwidth=0)
+        try:
+            style.layout(
+                "TNotebook",
+                [("Notebook.client", {"sticky": "nswe"})],
+            )
+            style.layout(
+                "TNotebook.Tab",
+                [
+                    (
+                        "Notebook.padding",
+                        {
+                            "sticky": "nswe",
+                            "children": [
+                                ("Notebook.label", {"sticky": ""}),
+                            ],
+                        },
+                    )
+                ],
+            )
+        except tk.TclError:
+            pass
+        style.configure(
+            "TNotebook",
+            background=_WHITE,
+            borderwidth=0,
+            relief="flat",
+            lightcolor=_WHITE,
+            darkcolor=_WHITE,
+            bordercolor=_WHITE,
+            tabmargins=(0, 0, 0, 0),
+        )
         style.configure(
             "TNotebook.Tab",
             background=_WHITE,
             foreground=_TEXT,
-            padding=(12, 6),
+            padding=(14, 6),
             borderwidth=0,
+            relief="flat",
+            lightcolor=_WHITE,
+            darkcolor=_WHITE,
+            bordercolor=_WHITE,
+            focuscolor=_WHITE,
         )
         style.map(
             "TNotebook.Tab",
-            background=[("selected", _WHITE), ("active", _HOVER)],
+            background=[("selected", _HOVER), ("active", _HOVER)],
             foreground=[("selected", _TEXT)],
+            lightcolor=[("selected", _WHITE), ("active", _WHITE)],
+            darkcolor=[("selected", _WHITE), ("active", _WHITE)],
+            bordercolor=[("selected", _WHITE), ("active", _WHITE)],
         )
         style.configure(
             "TLabelframe",

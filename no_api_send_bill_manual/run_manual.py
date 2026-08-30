@@ -47,7 +47,7 @@ SHEET_CARRIER_COL_DEFAULT = 6  # Column G
 SHEET_PAGE_COL_DEFAULT = 8
 SHEET_TRACKING_COL_DEFAULT = 25
 SHEET_SENT_DATE_COL = 18  # R
-SHEET_REQUIRED_STATUS = "📦ລໍຈັດສົ່ງ"
+SHEET_REQUIRED_STATUS = "📦ລໍສົ່ງບິນ"
 SHEET_ORDER_HEADERS = ("Order", "order", "Order ID", "Order Id", "OrderID")
 SHEET_PAGE_HEADERS = ("ຊ່ອງທາງ", "ช่องทาง", "Channel", "channel", "Page", "page")
 SHEET_TRACKING_HEADERS = ("Tracking ID", "tracking_id", "Tracking Id", "เลขพัสดุ")
@@ -142,7 +142,7 @@ def get_sheet_workbook(sheet_id: str, credentials_path: str):
 def read_rows_from_workbook(
     workbook, sheet_names: List[str], phone_map: Optional[Dict[str, str]] = None
 ) -> Tuple[List[Tuple[str, str, str, str]], int]:
-    """ດຶງແຖວທີ່ມີສະຖານະ 'ລໍຈັດສົ່ງ' (+ WhatsApp rows with phone); ສົ່ງຄືນ (rows, ຈຳນວນແຖວທີ່ຂ້າມ)"""
+    """ດຶງແຖວທີ່ມີສະຖານະ 'ລໍສົ່ງບິນ' (+ WhatsApp rows with phone); ສົ່ງຄືນ (rows, ຈຳນວນແຖວທີ່ຂ້າມ)"""
     rows: List[Tuple[str, str, str, str]] = []
     skipped_no_tracking = 0
     for sheet_name in sheet_names:

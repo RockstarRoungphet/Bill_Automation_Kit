@@ -3,7 +3,7 @@
 ถ่ายภาพหน้าจอบิลจากเว็บ Anousith ตาม Tracking ID
 - เปิด URL บิลแล้ว screenshot เก็บลงโฟลเดอร์ bill_images/ (ชื่อไฟล์ = tracking_id.png)
 - ใช้ร่วมกับ send_bill_from_sheet.py (ส่งข้อความ + แนบรูป)
-- ตอนอ่าน CSV จะกรองเฉพาะแถวที่คอลัมน์ A = "📦ລໍຈັດສົ່ງ" และคอลัมน์ Z มีข้อมูล
+- ตอนอ่าน CSV จะกรองเฉพาะแถวที่คอลัมน์ A = "📦ລໍສົ່ງບິນ" และคอลัมน์ Z มีข้อมูล
 
 URL สองแบบ:
   - สาธารณะ (ค่าเริ่มต้น): ใครมีเลขบิลก็ค้นหาได้ — แสดงบิลเดียวต่อเลขบิล ไม่จำกัด 100 รายการ ไม่ต้องล็อกอิน (แนะนำ)
@@ -79,7 +79,7 @@ MANUAL_DIR = PROJECT_DIR / "no_api_send_bill_manual"
 CONFIG_DIR = MANUAL_DIR / "config"
 SHEET_CONFIG_PATH = CONFIG_DIR / "sheet_config.json"
 SHEET_STATUS_COL = 0
-SHEET_REQUIRED_STATUS = "📦ລໍຈັດສົ່ງ"
+SHEET_REQUIRED_STATUS = "📦ລໍສົ່ງບິນ"
 
 
 def _load_dotenv(path: str = None) -> None:
@@ -104,7 +104,7 @@ def _load_dotenv(path: str = None) -> None:
         pass
 
 # กรองเฉพาะแถวที่คอลัมน์ A = ค่านี้ และคอลัมน์ Z มีข้อมูล ถึงจะถ่ายบิล
-FILTER_COL_A_VALUE = "📦ລໍຈັດສົ່ງ"
+FILTER_COL_A_VALUE = "📦ລໍສົ່ງບິນ"
 COL_A_INDEX = 0
 # คอลัมน์ G ใน Excel = index 6 (carrier: Anousith vs HAL)
 COL_G_INDEX = 6
@@ -132,7 +132,7 @@ def _find_col(headers: List[str], names: Tuple[str, ...], default: int) -> int:
 def _read_tracking_ids_from_sheet() -> Tuple[List[str], int]:
     """อ่าน Tracking ID จาก Google Sheet (ใช้ config ร่วมกับ run_manual.py)
 
-    - กรองเฉพาะแถวที่คอลัมน์ A = 📦ລໍຈັດສົ່ງ และคอลัมน์ G = Anousith (ອານຸສິດ) เท่านั้น — ไม่รวม HAL (ຮຸ່ງອາລຸນ)
+    - กรองเฉพาะแถวที่คอลัมน์ A = 📦ລໍສົ່ງບິນ และคอลัมน์ G = Anousith (ອານຸສິດ) เท่านั้น — ไม่รวม HAL (ຮຸ່ງອາລຸນ)
     - ใช้คอลัมน์ที่ header ตรงกับ TRACKING_HEADERS เป็นแหล่ง tracking ID (หรือ fallback เป็นคอลัมน์ Z)
     คืนค่า: (รายการ tracking_id, จำนวนแถวที่มีสถานะ + carrier Anousith แต่ไม่มี tracking ID ที่ใช้ได้)
     """
@@ -185,10 +185,11 @@ def _read_tracking_ids_from_sheet() -> Tuple[List[str], int]:
         track_col = _find_col(header, TRACKING_HEADERS, COL_Z_INDEX)
         for cells in all_rows[1:]:
             cells = [str(x).strip() for x in cells]
+            a = cells[COL_A_INDEX] if COL_A_INDEX < len(cells) else ""
             need_len = max(COL_A_INDEX, COL_G_INDEX, track_col)
             if len(cells) <= need_len:
                 continue
-            if (cells[COL_A_INDEX] if COL_A_INDEX < len(cells) else "") != FILTER_COL_A_VALUE:
+            if a != FILTER_COL_A_VALUE:
                 continue
             carrier = cells[COL_G_INDEX] if COL_G_INDEX < len(cells) else ""
             if carrier != SHEET_CARRIER_ANOUSITH:
@@ -580,10 +581,18 @@ def main():
         # อ่าน Tracking ID จาก Google Sheet ตาม config เดียวกับ run_manual.py
         tracking_ids, skipped_no_tracking = _read_tracking_ids_from_sheet()
         if not tracking_ids:
-            print("❌ ບໍ່ພົບ Tracking ID ທີ່ສາມາດຖ່າຍບິນໄດ້ໃນ Google Sheet")
-            sys.exit(1)
+            print("ℹ️ Anousith: ไม่มีรายการให้ถ่าย (ไม่มี Tracking ID ອານຸສິດ ในชีต)")
+            sys.exit(0)
         if skipped_no_tracking > 0:
             print(f"ℹ️ ຂ້າມ {skipped_no_tracking} ແຖວທີ່ສະຖານະເທົ່າກັບ '{FILTER_COL_A_VALUE}' ແຕ່ບໍ່ມີ tracking ID ຫຼືຮູບແບບບໍ່ຖືກ")
+
+    already = [tid for tid in tracking_ids if os.path.isfile(os.path.join(bills_dir, f"{tid}.png"))]
+    tracking_ids = [tid for tid in tracking_ids if tid not in set(already)]
+    if already:
+        print(f"ℹ️ ຂ້າມ {len(already)} ລາຍການທີ່ມີຮູບໃນ {bills_dir}/ ແລ້ວ")
+    if not tracking_ids:
+        print(f"✅ ມີຮູບຄົບແລ້ວ ບໍ່ຕ້ອງຖ່າຍໃໝ່")
+        sys.exit(0)
 
     _load_dotenv()
     default_auth = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auth.json")

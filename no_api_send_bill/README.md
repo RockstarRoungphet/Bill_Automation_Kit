@@ -1,7 +1,7 @@
 # ส่งบิลพัสดุไป Messenger (เวอร์ชันไม่ใช้ API — ใช้การค้นหา)
 
 เวอร์ชันนี้**ไม่ใช้ Facebook Graph API** แต่ใช้**เบราว์เซอร์อัตโนมัติ** (Playwright) เพื่อ:
-- กรองเฉพาะบิลที่มีสถานะ **"📦ລໍຈັດສົ່ງ"** (Column A) เท่านั้น
+- กรองเฉพาะบิลที่มีสถานะ **"📦ລໍສົ່ງບິນ"** (Column A) เท่านั้น
 1. เปิด Facebook Business Suite Inbox ตามชื่อเพจ
 2. ค้นหา Order number ในแชท
 3. เปิดแชทที่ตรง
@@ -22,7 +22,7 @@
 ## สิ่งที่ต้องมี
 
 - **Google Sheet** มีคอลัมน์:
-  - **Column A** = สถานะ (ต้องเป็น **"📦ລໍຈັດສົ່ງ"** เท่านั้น — script จะกรองเฉพาะแถวนี้)
+  - **Column A** = สถานะ (ต้องเป็น **"📦ລໍສົ່ງບິນ"** เท่านั้น — script จะกรองเฉพาะแถวนี้)
   - **Column D** = Order ID
   - **Column I** = ชื่อเพจ (เช่น "MallShop", "Kittools", "ຂາຍທຸກຢ່າງທີ່ຖືກແລະດີ")
   - **Column Z** = Tracking ID
@@ -188,7 +188,7 @@ no_api_send_bill/
 ## Flow การทำงาน
 
 1. **อ่าน CSV**: ดึง Order (Column D), ชื่อเพจ (Column I), Tracking ID (Column Z)
-   - **กรองเฉพาะแถวที่ Column A = "📦ລໍຈັດສົ່ງ"** เท่านั้น
+   - **กรองเฉพาะแถวที่ Column A = "📦ລໍສົ່ງບິນ"** เท่านั้น
 2. **แปลงชื่อเพจ → page_id**: ใช้ `config/page_name_to_id.json`
 3. **เปิดเบราว์เซอร์**: Playwright เปิด Chromium
 4. **เปิด Inbox**: `https://business.facebook.com/latest/inbox?selected_page_id={page_id}`
