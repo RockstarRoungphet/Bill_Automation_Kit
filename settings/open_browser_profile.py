@@ -11,10 +11,26 @@ HAL_LOGIN_URL = "https://www.halexpress.la/login"
 
 
 def _alive_pages(context) -> bool:
+    """Return True if the context still has at least one responsive page.
+
+    On Windows persistent profiles, closing the Chromium window often leaves
+    page objects with is_closed() == False even though the target is gone.
+    """
     try:
-        return any(not page.is_closed() for page in context.pages)
+        pages = context.pages
     except Exception:
         return False
+    if not pages:
+        return False
+    for page in pages:
+        if page.is_closed():
+            continue
+        try:
+            page.evaluate("() => true", timeout=1500)
+            return True
+        except Exception:
+            continue
+    return False
 
 
 def _join_timeout(fn, timeout_sec: float) -> None:

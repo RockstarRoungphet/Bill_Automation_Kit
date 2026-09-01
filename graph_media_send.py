@@ -49,6 +49,26 @@ def _list_subfolder_media(
     return images, videos
 
 
+def discover_page_media_ordered(base_dir: str, page_name: str) -> List[str]:
+    """Return media file paths in natural filename order (images + videos mixed)."""
+    base_dir = os.path.normpath(base_dir)
+    if not page_name or not os.path.isdir(base_dir):
+        return []
+    sub = os.path.join(base_dir, page_name)
+    if not os.path.isdir(sub):
+        return []
+    paths: List[str] = []
+    try:
+        names = sorted(os.listdir(sub), key=natural_sort_key)
+    except OSError:
+        return []
+    for name in names:
+        path = os.path.join(sub, name)
+        if os.path.isfile(path) and media_type_for_path(path):
+            paths.append(path)
+    return paths
+
+
 def discover_page_media(base_dir: str, page_name: str) -> Tuple[List[str], List[str]]:
     """
     Return (image_paths, video_paths) from base_dir/page_name/ only.
@@ -191,6 +211,29 @@ def send_text_message(
         return False
 
 
+def send_media_paths_ordered(
+    page_id: str,
+    page_access_token: str,
+    recipient_psid: str,
+    paths: Iterable[str],
+    send_delay: float = 0.6,
+    log_prefix: str = "",
+) -> None:
+    """Upload and send each file in order (mixed images and videos)."""
+    for path in paths:
+        mtype = media_type_for_path(path)
+        if not mtype:
+            continue
+        aid = upload_message_attachment(page_id, page_access_token, path)
+        if aid:
+            if send_attachment_by_id(
+                page_id, page_access_token, recipient_psid, aid, mtype
+            ):
+                label = "รูป" if mtype == "image" else "วิดีโอ"
+                print(f"   ✅ {log_prefix}ส่ง{label}: {os.path.basename(path)}")
+        time.sleep(send_delay)
+
+
 def send_media_sequence(
     page_id: str,
     page_access_token: str,
@@ -200,24 +243,14 @@ def send_media_sequence(
     send_delay: float = 0.6,
     log_prefix: str = "",
 ) -> None:
-    """Upload and send each image then each video; delay between sends."""
-    imgs = list(image_paths)
-    vids = list(video_paths)
-    for path in imgs:
-        mtype = media_type_for_path(path)
-        if mtype != "image":
-            continue
-        aid = upload_message_attachment(page_id, page_access_token, path)
-        if aid:
-            if send_attachment_by_id(page_id, page_access_token, recipient_psid, aid, "image"):
-                print(f"   ✅ {log_prefix}ส่งรูป: {os.path.basename(path)}")
-        time.sleep(send_delay)
-    for path in vids:
-        mtype = media_type_for_path(path)
-        if mtype != "video":
-            continue
-        aid = upload_message_attachment(page_id, page_access_token, path)
-        if aid:
-            if send_attachment_by_id(page_id, page_access_token, recipient_psid, aid, "video"):
-                print(f"   ✅ {log_prefix}ส่งวิดีโอ: {os.path.basename(path)}")
-        time.sleep(send_delay)
+    """Upload and send media; order follows natural sort of filenames."""
+    paths = list(image_paths) + list(video_paths)
+    paths.sort(key=natural_sort_key)
+    send_media_paths_ordered(
+        page_id,
+        page_access_token,
+        recipient_psid,
+        paths,
+        send_delay=send_delay,
+        log_prefix=log_prefix,
+    )

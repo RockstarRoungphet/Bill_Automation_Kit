@@ -20,7 +20,7 @@ from datetime import datetime
 
 import requests
 
-from graph_media_send import discover_page_media, send_media_sequence
+from graph_media_send import discover_page_media_ordered, send_media_paths_ordered
 
 LAST_MESSAGE_FILE = "last_message_by_psid.json"
 ORDER_PSID_FILE = "order_psid.json"
@@ -122,12 +122,10 @@ def send_promo_message(
     access_token: str,
     psid: str,
     text: str,
-    image_paths: list | None = None,
-    video_paths: list | None = None,
+    media_paths: list | None = None,
 ) -> bool:
-    """ส่งข้อความโปรโมชั่น แล้วส่งรูป/วิดีโอทีละไฟล์ (Graph API — อยู่ใน 24 ชม.)"""
-    image_paths = image_paths or []
-    video_paths = video_paths or []
+    """ส่งข้อความโปรโมชั่น แล้วส่งรูป/วิดีโอทีละไฟล์ตามลำดับ (Graph API — อยู่ใน 24 ชม.)"""
+    media_paths = media_paths or []
 
     url = f"https://graph.facebook.com/v18.0/{page_id}/messages"
     payload_text = {
@@ -157,14 +155,13 @@ def send_promo_message(
     if not ok_text:
         return False
 
-    if image_paths or video_paths:
+    if media_paths:
         time.sleep(SEND_DELAY)
-        send_media_sequence(
+        send_media_paths_ordered(
             page_id,
             access_token,
             psid,
-            image_paths,
-            video_paths,
+            media_paths,
             send_delay=SEND_DELAY,
             log_prefix="Promo ",
         )
@@ -242,7 +239,7 @@ def main():
     promo_dir_base = os.path.join(SCRIPT_DIR, PROMO_IMAGE_DIR)
 
     for page_name, promo_text in pages_promo.items():
-        promo_images, promo_videos = discover_page_media(promo_dir_base, page_name)
+        promo_paths = discover_page_media_ordered(promo_dir_base, page_name)
 
         if not promo_text:
             print(f"\n⚠️ ไม่มีข้อความโปรโมชั่นสำหรับ '{page_name}' — ข้าม")
@@ -286,8 +283,8 @@ def main():
             print(f"\n📋 {page_name}: ไม่มีลูกค้าที่ต้องส่งโปรโม")
             continue
 
-        n_img, n_vid = len(promo_images), len(promo_videos)
-        media_desc = f"รูป {n_img} | วิดีโอ {n_vid}" if (n_img or n_vid) else "ไม่มีสื่อ"
+        n_media = len(promo_paths)
+        media_desc = f"สื่อ {n_media} ไฟล์" if n_media else "ไม่มีสื่อ"
         print(f"\n📋 {page_name}: ส่งโปรโมให้ {len(eligible)} คน ({media_desc})")
         sent = 0
         for psid in eligible:
@@ -296,8 +293,7 @@ def main():
                 access_token,
                 psid,
                 promo_text,
-                image_paths=promo_images,
-                video_paths=promo_videos,
+                media_paths=promo_paths,
             )
             if ok:
                 last_promo_sent[f"{page_id}:{psid}"] = now_ms

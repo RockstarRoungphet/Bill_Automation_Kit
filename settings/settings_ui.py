@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional
 
 from settings.config_io import ConfigIO, StatusItem, PAGE_REPLY_TEXT_KEYS
 from settings.graph_page import GraphPageError, fetch_page_by_id, list_pages_from_user_token
+from settings.media_thumbnail_panel import MediaThumbnailPanel
+from settings.ui_scrollbar import create_vertical_scrollbar
 from settings.open_browser_profile import (
     FACEBOOK_INBOX_URL,
     HAL_LOGIN_URL,
@@ -100,6 +102,7 @@ class SettingsWindow:
         self.var_user_token = tk.StringVar()
         self.var_business_page_id = tk.StringVar()
         self._browser_login_thread: threading.Thread | None = None
+        self._browser_login_poll_id: str | None = None
 
         nb = ttk.Notebook(self.win)
         nb.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
@@ -226,7 +229,12 @@ class SettingsWindow:
         )
         style.map(
             "TButton",
-            background=[("active", _HOVER), ("pressed", _HOVER)],
+            background=[
+                ("disabled", _HOVER),
+                ("active", _HOVER),
+                ("pressed", _HOVER),
+            ],
+            foreground=[("disabled", "#9aa0a6")],
             bordercolor=[("active", "#bdc1c6"), ("pressed", "#bdc1c6")],
         )
         style.configure(
@@ -284,6 +292,16 @@ class SettingsWindow:
             highlightthickness=1,
             highlightbackground=_BORDER,
             highlightcolor=_BORDER,
+            insertbackground=_TEXT,
+        )
+
+    def _style_embedded_text(self, widget: tk.Text) -> None:
+        widget.configure(
+            background=_WHITE,
+            foreground=_TEXT,
+            relief=tk.FLAT,
+            borderwidth=0,
+            highlightthickness=0,
             insertbackground=_TEXT,
         )
 
@@ -908,6 +926,30 @@ class SettingsWindow:
 
     # ----- Welcome -----
 
+    def _autosize_welcome_text(
+        self, widget: tk.Text, min_lines: int = 2, max_lines: int = 30
+    ) -> None:
+        widget.update_idletasks()
+        try:
+            lines = int(widget.index("end-1c").split(".")[0])
+        except (tk.TclError, ValueError):
+            lines = min_lines
+        widget.configure(height=max(min_lines, min(max_lines, lines)))
+
+    def _bind_welcome_text_autosize(self, widget: tk.Text) -> None:
+        def _on_modified(_event=None) -> None:
+            try:
+                if widget.edit_modified():
+                    self._autosize_welcome_text(widget)
+                    widget.edit_modified(False)
+            except tk.TclError:
+                pass
+
+        widget.bind("<<Modified>>", _on_modified)
+
+    def _welcome_page_name(self) -> str:
+        return (self.var_welcome_page.get() or "").strip()
+
     def _build_welcome(self) -> None:
         frm = self.tab_welcome
         cfg = self.io.load_page_reply_config()
@@ -949,9 +991,47 @@ class SettingsWindow:
             side=tk.LEFT
         )
 
-        self.var_media_hint = tk.StringVar(value="")
-        ttk.Label(frm, textvariable=self.var_media_hint, wraplength=720).pack(
+        self.var_welcome_hint = tk.StringVar(value="")
+        ttk.Label(frm, textvariable=self.var_welcome_hint, wraplength=720).pack(
             anchor=tk.W, padx=10
+        )
+
+        scroll_outer = ttk.Frame(frm)
+        scroll_outer.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
+        self._welcome_canvas = tk.Canvas(scroll_outer, highlightthickness=0, bg="#ffffff")
+        welcome_vsb = create_vertical_scrollbar(
+            scroll_outer,
+            command=self._welcome_canvas.yview,
+        )
+        self._welcome_canvas.configure(yscrollcommand=welcome_vsb.set)
+        self._welcome_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        welcome_vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self._welcome_body = ttk.Frame(self._welcome_canvas)
+        self._welcome_canvas_window = self._welcome_canvas.create_window(
+            (0, 0), window=self._welcome_body, anchor=tk.NW
+        )
+        self._welcome_body.bind(
+            "<Configure>",
+            lambda _e: self._welcome_canvas.configure(
+                scrollregion=self._welcome_canvas.bbox("all")
+            ),
+        )
+        self._welcome_canvas.bind(
+            "<Configure>",
+            lambda e: self._welcome_canvas.itemconfigure(
+                self._welcome_canvas_window, width=e.width
+            ),
+        )
+        self._welcome_canvas.bind(
+            "<Enter>",
+            lambda _e: self._welcome_canvas.bind_all(
+                "<MouseWheel>", self._on_welcome_mousewheel
+            ),
+        )
+        self._welcome_canvas.bind(
+            "<Leave>",
+            lambda _e: self._welcome_canvas.unbind_all("<MouseWheel>"),
         )
 
         labels = {
@@ -961,30 +1041,50 @@ class SettingsWindow:
             "cod_reply": "cod_reply (เก็บปลายทาง)",
             "order_reply": "order_reply (สั่งซื้อ)",
         }
+        media_after = {
+            "welcome_text": "welcome",
+            "price_reply": "price",
+            "promo_text": "promo",
+        }
         self._welcome_texts: Dict[str, tk.Text] = {}
-        body = ttk.Frame(frm)
-        body.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
-        for i, key in enumerate(PAGE_REPLY_TEXT_KEYS):
-            ttk.Label(body, text=labels.get(key, key)).grid(
-                row=i * 2, column=0, sticky=tk.W, pady=(4, 0)
+        self._welcome_media_panels: Dict[str, MediaThumbnailPanel] = {}
+        row = 0
+        for key in PAGE_REPLY_TEXT_KEYS:
+            ttk.Label(self._welcome_body, text=labels.get(key, key)).grid(
+                row=row, column=0, sticky=tk.W, pady=(8, 0)
             )
-            txt = tk.Text(body, height=2, wrap=tk.WORD, font=("Segoe UI", 9))
-            self._style_text(txt)
-            txt.grid(row=i * 2 + 1, column=0, sticky=tk.NSEW, pady=(0, 2))
-            self._welcome_texts[key] = txt
-            body.rowconfigure(i * 2 + 1, weight=1)
-        body.columnconfigure(0, weight=1)
-
-        media_row = ttk.Frame(frm)
-        media_row.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 4))
-        self._welcome_media_list = self._build_media_box(
-            media_row, "สื่อต้อนรับ", "welcome"
-        )
-        self._promo_media_list = self._build_media_box(
-            media_row, "สื่อโปรโม", "promo"
-        )
-        media_row.columnconfigure(0, weight=1)
-        media_row.columnconfigure(1, weight=1)
+            row += 1
+            if key in media_after:
+                kind = media_after[key]
+                box = tk.Frame(
+                    self._welcome_body,
+                    bg=_WHITE,
+                    highlightthickness=1,
+                    highlightbackground=_BORDER,
+                    highlightcolor=_BORDER,
+                )
+                box.grid(row=row, column=0, sticky=tk.EW, pady=(0, 4))
+                txt = tk.Text(box, height=2, wrap=tk.WORD, font=("Segoe UI", 9))
+                self._style_embedded_text(txt)
+                txt.pack(fill=tk.X, padx=4, pady=(4, 2))
+                self._bind_welcome_text_autosize(txt)
+                self._welcome_texts[key] = txt
+                panel = MediaThumbnailPanel(
+                    box,
+                    kind,
+                    self.io,
+                    self._welcome_page_name,
+                )
+                panel.pack(fill=tk.X, padx=4, pady=(0, 4))
+                self._welcome_media_panels[kind] = panel
+            else:
+                txt = tk.Text(self._welcome_body, height=2, wrap=tk.WORD, font=("Segoe UI", 9))
+                self._style_text(txt)
+                txt.grid(row=row, column=0, sticky=tk.EW, pady=(0, 4))
+                self._bind_welcome_text_autosize(txt)
+                self._welcome_texts[key] = txt
+            row += 1
+        self._welcome_body.columnconfigure(0, weight=1)
 
         bf = ttk.Frame(frm)
         bf.pack(fill=tk.X, padx=10, pady=(0, 8))
@@ -992,6 +1092,10 @@ class SettingsWindow:
 
         self._welcome_loaded_page = ""
         self._refresh_welcome_page_list()
+
+    def _on_welcome_mousewheel(self, event) -> None:
+        if event.delta:
+            self._welcome_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _welcome_globals(self) -> Dict[str, Any]:
         return {
@@ -1019,13 +1123,14 @@ class SettingsWindow:
             self._load_welcome_page()
         else:
             self.var_welcome_page.set("")
-            self.var_media_hint.set(
+            self.var_welcome_hint.set(
                 "ยังไม่มีเพจจริงในตาราง — ไปแท็บเพจ Facebook นำเข้าแล้วบันทึกเพจก่อน"
             )
             for widget in self._welcome_texts.values():
                 widget.delete("1.0", tk.END)
+                self._autosize_welcome_text(widget)
             self._welcome_loaded_page = ""
-            self._reload_media_lists()
+            self._reload_media_panels()
 
     def _load_welcome_page(self) -> None:
         name = self.var_welcome_page.get().strip()
@@ -1035,115 +1140,14 @@ class SettingsWindow:
         for key, widget in self._welcome_texts.items():
             widget.delete("1.0", tk.END)
             widget.insert("1.0", str(data.get(key) or ""))
-        if name:
-            try:
-                wdir = self.io.page_media_dir("welcome", name)
-                pdir = self.io.page_media_dir("promo", name)
-                self.var_media_hint.set(
-                    f"ต้อนรับ: {wdir}   |   โปรโม: {pdir}"
-                )
-            except ValueError:
-                self.var_media_hint.set("")
+            self._autosize_welcome_text(widget)
+        self.var_welcome_hint.set("" if name else "")
         self._welcome_loaded_page = name
-        self._reload_media_lists()
+        self._reload_media_panels()
 
-    def _build_media_box(self, parent: ttk.Frame, title: str, kind: str) -> ttk.Treeview:
-        box = ttk.LabelFrame(parent, text=title)
-        col = 0 if kind == "welcome" else 1
-        box.grid(row=0, column=col, sticky=tk.NSEW, padx=(0, 6) if col == 0 else (6, 0))
-        tree = ttk.Treeview(
-            box, columns=("name", "kind"), show="headings", height=6, selectmode="extended"
-        )
-        tree.heading("name", text="ไฟล์")
-        tree.heading("kind", text="ชนิด")
-        tree.column("name", width=220)
-        tree.column("kind", width=60)
-        tree.pack(fill=tk.BOTH, expand=True, padx=6, pady=(4, 0))
-        btns = ttk.Frame(box)
-        btns.pack(fill=tk.X, padx=6, pady=6)
-        ttk.Button(
-            btns, text="เพิ่มไฟล์…", command=lambda k=kind: self._add_page_media(k)
-        ).pack(side=tk.LEFT)
-        ttk.Button(
-            btns, text="ลบที่เลือก", command=lambda k=kind: self._delete_page_media(k)
-        ).pack(side=tk.LEFT, padx=6)
-        if kind == "welcome":
-            self._welcome_media_tree = tree
-        else:
-            self._promo_media_tree = tree
-        return tree
-
-    def _media_tree_for(self, kind: str) -> ttk.Treeview:
-        return self._welcome_media_tree if kind == "welcome" else self._promo_media_tree
-
-    def _reload_media_lists(self) -> None:
-        name = (self.var_welcome_page.get() or "").strip()
-        for kind in ("welcome", "promo"):
-            tree = self._media_tree_for(kind)
-            for iid in tree.get_children():
-                tree.delete(iid)
-            if not name:
-                continue
-            try:
-                rows = self.io.list_page_media(kind, name)
-            except ValueError:
-                continue
-            for i, row in enumerate(rows):
-                label = "รูป" if row.get("kind") == "image" else "วิดีโอ"
-                tree.insert("", tk.END, iid=str(i), values=(row.get("name") or "", label))
-
-    def _add_page_media(self, kind: str) -> None:
-        name = (self.var_welcome_page.get() or "").strip()
-        if not name:
-            messagebox.showwarning(
-                "ยังไม่มีเพจ", "เลือกเพจก่อน แล้วค่อยเพิ่มไฟล์", parent=self.win
-            )
-            return
-        paths = filedialog.askopenfilenames(
-            parent=self.win,
-            title="เลือก<fim-middle>รูปหรือวิดีโอ",
-            filetypes=[
-                ("สื่อ", "*.jpg *.jpeg *.png *.gif *.webp *.mp4 *.mov *.m4v *.webm"),
-                ("รูป", "*.jpg *.jpeg *.png *.gif *.webp"),
-                ("วิดีโอ", "*.mp4 *.mov *.m4v *.webm"),
-                ("All", "*.*"),
-            ],
-        )
-        if not paths:
-            return
-        try:
-            added = self.io.add_page_media(kind, name, [Path(p) for p in paths])
-            self._reload_media_lists()
-            messagebox.showinfo(
-                "เพิ่มแล้ว",
-                f"คัดลอก {len(added)} ไฟล์เข้าโฟลเดอร์เพจแล้ว",
-                parent=self.win,
-            )
-        except Exception as e:
-            messagebox.showerror("ผิดพลาด", str(e), parent=self.win)
-
-    def _delete_page_media(self, kind: str) -> None:
-        name = (self.var_welcome_page.get() or "").strip()
-        if not name:
-            return
-        tree = self._media_tree_for(kind)
-        sel = tree.selection()
-        if not sel:
-            messagebox.showwarning("ยังไม่เลือก", "เลือกไฟล์ในรายการก่อน", parent=self.win)
-            return
-        names = [str(tree.item(iid, "values")[0]) for iid in sel]
-        if not messagebox.askyesno(
-            "ลบไฟล์",
-            "ลบไฟล์ที่เลือกออกจากโฟลเดอร์เพจ?\n" + "\n".join(names),
-            parent=self.win,
-        ):
-            return
-        try:
-            n = self.io.delete_page_media(kind, name, names)
-            self._reload_media_lists()
-            messagebox.showinfo("ลบแล้ว", f"ลบ {n} ไฟล์", parent=self.win)
-        except Exception as e:
-            messagebox.showerror("ผิดพลาด", str(e), parent=self.win)
+    def _reload_media_panels(self) -> None:
+        for panel in getattr(self, "_welcome_media_panels", {}).values():
+            panel.refresh()
 
     def save_welcome(self) -> bool:
         name = self.var_welcome_page.get().strip()
@@ -1364,10 +1368,40 @@ class SettingsWindow:
         )
 
     def _set_browser_login_busy(self, busy: bool) -> None:
-        state = tk.DISABLED if busy else tk.NORMAL
         for btn in (getattr(self, "btn_fb_login", None), getattr(self, "btn_hal_login", None)):
-            if btn is not None:
-                btn.config(state=state)
+            if btn is None:
+                continue
+            try:
+                if busy:
+                    btn.state(["disabled"])
+                else:
+                    btn.state(["!disabled"])
+            except tk.TclError:
+                btn.config(state=tk.DISABLED if busy else tk.NORMAL)
+
+    def _cancel_browser_login_poll(self) -> None:
+        poll_id = self._browser_login_poll_id
+        if not poll_id:
+            return
+        try:
+            self.win.after_cancel(poll_id)
+        except Exception:
+            pass
+        self._browser_login_poll_id = None
+
+    def _schedule_browser_login_poll(self) -> None:
+        self._cancel_browser_login_poll()
+
+        def _poll() -> None:
+            t = self._browser_login_thread
+            if t is None or not t.is_alive():
+                self._browser_login_thread = None
+                self._set_browser_login_busy(False)
+                self._browser_login_poll_id = None
+                return
+            self._browser_login_poll_id = self.win.after(400, _poll)
+
+        self._browser_login_poll_id = self.win.after(400, _poll)
 
     def _open_profile_login(self, path_value: str, url: str, label: str) -> None:
         t = self._browser_login_thread
@@ -1387,20 +1421,23 @@ class SettingsWindow:
                 open_persistent_login(profile, url)
             except Exception as e:
                 err.append(e)
+            finally:
 
-            def done() -> None:
-                self._browser_login_thread = None
-                self._set_browser_login_busy(False)
-                if err:
-                    messagebox.showerror("ผิดพลาด", str(err[0]), parent=self.win)
+                def done() -> None:
+                    self._cancel_browser_login_poll()
+                    self._browser_login_thread = None
+                    self._set_browser_login_busy(False)
+                    if err:
+                        messagebox.showerror("ผิดพลาด", str(err[0]), parent=self.win)
 
-            try:
-                self.win.after(0, done)
-            except Exception:
-                pass
+                try:
+                    self.win.after(0, done)
+                except Exception:
+                    pass
 
         self._browser_login_thread = threading.Thread(target=worker, daemon=True)
         self._browser_login_thread.start()
+        self._schedule_browser_login_poll()
 
 
 def open_settings_window(parent: tk.Misc, project_root: Path) -> SettingsWindow:

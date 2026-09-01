@@ -23,8 +23,8 @@ from typing import Optional
 import requests
 
 from graph_media_send import (
-    discover_page_media,
-    send_media_sequence,
+    discover_page_media_ordered,
+    send_media_paths_ordered,
     send_text_message,
 )
 
@@ -38,6 +38,7 @@ ENABLE_FEED = os.getenv("ENABLE_FEED", "0").strip().lower() in ("1", "true", "on
 BASE_URL = os.getenv("BASE_URL", "http://localhost:5000")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PRODUCT_IMAGES_DIR = os.path.join(SCRIPT_DIR, "product_images")
+PRICE_IMAGES_DIR = os.path.join(SCRIPT_DIR, "price_images")
 WELCOME_SEND_DELAY = float(os.getenv("WELCOME_SEND_DELAY", "0.6"))
 
 ORDER_PSID_FILE = "order_psid.json"
@@ -832,25 +833,65 @@ def send_welcome_bundle(page_id: str, recipient_id: str) -> None:
         print(f"   ⏸️ messenger_auto_replies_disabled — ข้าม welcome (ข้อความ+สื่อ)")
         return
 
-    imgs, vids = discover_page_media(PRODUCT_IMAGES_DIR, page_name)
+    paths = discover_page_media_ordered(PRODUCT_IMAGES_DIR, page_name)
 
     response_text = _get_welcome_text(page_id)
     if response_text:
         send_text_message(page_id, page_token, recipient_id, response_text)
         time.sleep(WELCOME_SEND_DELAY)
 
-    if imgs or vids:
-        send_media_sequence(
+    if paths:
+        send_media_paths_ordered(
             page_id,
             page_token,
             recipient_id,
-            imgs,
-            vids,
+            paths,
             send_delay=WELCOME_SEND_DELAY,
             log_prefix="Welcome ",
         )
     elif not response_text:
         print(f"   ⚠️ ไม่มีข้อความต้อนรับและไม่มีสื่อ — ไม่ส่งอะไร")
+
+
+def _get_price_reply_text(page_id: str) -> str:
+    cfg = PAGE_WELCOME_CONFIG.get(page_id) or {}
+    price = cfg.get("price_reply")
+    if price is not None and str(price).strip():
+        return str(price)
+    return _generic_reply()
+
+
+def send_price_reply_bundle(page_id: str, recipient_id: str, user_message: str) -> bool:
+    """ตอบคำถามราคา: ข้อความ price_reply + สื่อจาก price_images/<เพจ>/"""
+    matched, best_kw, score, method = is_price_question(user_message or "")
+    if not matched:
+        return False
+
+    page_token = PAGE_TOKENS.get(page_id)
+    if not page_token:
+        print(f"   ⚠️ ไม่พบ Page Token สำหรับเพจ {fmt_page(page_id)}")
+        return False
+
+    print(f"   💰 ตรวจพบคำถามราคา: keyword='{best_kw}' score={score:.2f} method={method}")
+    page_name = PAGE_NAMES.get(page_id) or ""
+    response_text = _get_price_reply_text(page_id)
+    if response_text:
+        send_text_message(page_id, page_token, recipient_id, response_text)
+        time.sleep(WELCOME_SEND_DELAY)
+
+    paths = discover_page_media_ordered(PRICE_IMAGES_DIR, page_name)
+    if paths:
+        send_media_paths_ordered(
+            page_id,
+            page_token,
+            recipient_id,
+            paths,
+            send_delay=WELCOME_SEND_DELAY,
+            log_prefix="Price ",
+        )
+    elif not response_text:
+        print(f"   ⚠️ ไม่มี price_reply และไม่มีสื่อ — ไม่ส่งอะไร")
+    return True
 
 
 def _handle_ad_postback_or_referral(event: dict) -> None:
@@ -1007,6 +1048,8 @@ def _process_webhook_body(body: dict) -> None:
                 else:
                     if auto_off:
                         print(f"   ⏸️ messenger_auto_replies_disabled — ข้ามตอบราคา/คีย์เวิร์ดอัตโนมัติ")
+                    elif send_price_reply_bundle(cur_page_id, sender_id, message_text):
+                        pass
                     else:
                         response_text = generate_response(message_text, cur_page_id)
                         send_message(cur_page_id, sender_id, response_text)

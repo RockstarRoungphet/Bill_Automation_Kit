@@ -62,7 +62,12 @@ NOTIFY_MESSAGE_FILE_KEYS = {
 PAGE_MEDIA_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 PAGE_MEDIA_VIDEO_EXT = {".mp4", ".mov", ".m4v", ".webm"}
 PAGE_MEDIA_ALL_EXT = PAGE_MEDIA_IMAGE_EXT | PAGE_MEDIA_VIDEO_EXT
-PAGE_MEDIA_KINDS = ("welcome", "promo")
+PAGE_MEDIA_KINDS = ("welcome", "promo", "price")
+PAGE_MEDIA_FOLDERS = {
+    "welcome": "product_images",
+    "promo": "promo_images",
+    "price": "price_images",
+}
 
 META_MAP_KEYS = (
     "__business_pages",
@@ -614,7 +619,7 @@ class ConfigIO:
         kind = (kind or "").strip().lower()
         if kind not in PAGE_MEDIA_KINDS:
             raise ValueError(f"ชนิดสื่อไม่รู้จัก: {kind}")
-        folder = "product_images" if kind == "welcome" else "promo_images"
+        folder = PAGE_MEDIA_FOLDERS[kind]
         return self.root / folder / self._safe_page_folder_name(page_name)
 
     def list_page_media(self, kind: str, page_name: str) -> List[Dict[str, str]]:
@@ -704,6 +709,35 @@ class ConfigIO:
                 path.unlink()
                 deleted += 1
         return deleted
+
+    def reorder_page_media(
+        self, kind: str, page_name: str, ordered_names: List[str]
+    ) -> None:
+        """Rename files to 01.ext, 02.ext, ... following ordered_names."""
+        folder = self.page_media_dir(kind, page_name)
+        if not folder.is_dir():
+            raise ValueError("ไม่มีโฟลเดอร์สื่อ")
+
+        existing: Dict[str, Path] = {}
+        for p in folder.iterdir():
+            if p.is_file() and p.suffix.lower() in PAGE_MEDIA_ALL_EXT:
+                existing[p.name] = p
+
+        if set(existing.keys()) != set(ordered_names) or len(ordered_names) != len(
+            existing
+        ):
+            raise ValueError("รายการไฟล์ไม่ตรงกับในโฟลเดอร์")
+
+        temps: List[Path] = []
+        for i, name in enumerate(ordered_names):
+            src = existing[name]
+            tmp = folder / f"__reorder_{i:03d}{src.suffix.lower()}"
+            src.rename(tmp)
+            temps.append(tmp)
+
+        for i, tmp in enumerate(temps):
+            dest = folder / f"{i + 1:02d}{tmp.suffix.lower()}"
+            tmp.rename(dest)
 
     # --- setup status ---
 
