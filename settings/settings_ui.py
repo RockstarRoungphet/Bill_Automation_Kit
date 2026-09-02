@@ -9,9 +9,13 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Any, Dict, List, Optional
 
 from settings.config_io import ConfigIO, StatusItem, PAGE_REPLY_TEXT_KEYS
+from settings.unicode_input import bind_unicode_editing
 from settings.graph_page import GraphPageError, fetch_page_by_id, list_pages_from_user_token
 from settings.media_thumbnail_panel import MediaThumbnailPanel
+from settings.searchable_page_picker import SearchablePagePicker
+from settings.thin_entry import ThinEntry, create_thin_entry
 from settings.ui_scrollbar import create_vertical_scrollbar
+from settings.underline_tab_bar import UnderlineTabBar
 from settings.open_browser_profile import (
     FACEBOOK_INBOX_URL,
     HAL_LOGIN_URL,
@@ -26,8 +30,10 @@ _DEFAULT_SUBSCRIBED = [
 
 _WHITE = "#ffffff"
 _BORDER = "#dadce0"
+_BORDER_INPUT = "#e8eaed"
 _TEXT = "#202124"
 _HOVER = "#f1f3f4"
+_NOTEBOOK_STYLE = "Settings.TNotebook"
 
 
 class _HoverTip:
@@ -104,8 +110,23 @@ class SettingsWindow:
         self._browser_login_thread: threading.Thread | None = None
         self._browser_login_poll_id: str | None = None
 
-        nb = ttk.Notebook(self.win)
-        nb.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        container = ttk.Frame(self.win)
+        container.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self._container = container
+
+        tab_labels = [
+            "1. Checklist",
+            "2. Google Sheet",
+            "3. เพจ Facebook",
+            "4. Webhook / ngrok",
+            "5. ขนส่ง",
+            "6. Welcome",
+            "7. Browser Profile",
+        ]
+        nb = ttk.Notebook(container, style=_NOTEBOOK_STYLE)
+        self._tab_bar = UnderlineTabBar(container, nb, tab_labels)
+        self._tab_bar.pack(fill=tk.X, pady=(0, 4))
+        nb.pack(fill=tk.BOTH, expand=True)
 
         self.tab_check = ttk.Frame(nb)
         self.tab_sheet = ttk.Frame(nb)
@@ -114,13 +135,19 @@ class SettingsWindow:
         self.tab_carrier = ttk.Frame(nb)
         self.tab_welcome = ttk.Frame(nb)
         self.tab_browser = ttk.Frame(nb)
-        nb.add(self.tab_check, text="1. Checklist")
-        nb.add(self.tab_sheet, text="2. Google Sheet")
-        nb.add(self.tab_pages, text="3. เพจ Facebook")
-        nb.add(self.tab_webhook, text="4. Webhook / ngrok")
-        nb.add(self.tab_carrier, text="5. ขนส่ง")
-        nb.add(self.tab_welcome, text="6. Welcome")
-        nb.add(self.tab_browser, text="7. Browser Profile")
+        for frame, label in zip(
+            (
+                self.tab_check,
+                self.tab_sheet,
+                self.tab_pages,
+                self.tab_webhook,
+                self.tab_carrier,
+                self.tab_welcome,
+                self.tab_browser,
+            ),
+            tab_labels,
+        ):
+            nb.add(frame, text="")
 
         self._build_checklist()
         self._build_sheet()
@@ -141,6 +168,7 @@ class SettingsWindow:
         )
 
         self.refresh_checklist()
+        self._install_defocus_on_click()
         self.win.grab_set()
 
     def _apply_minimal_style(self) -> None:
@@ -156,27 +184,14 @@ class SettingsWindow:
         style.configure("TCheckbutton", background=_WHITE, foreground=_TEXT)
         try:
             style.layout(
-                "TNotebook",
+                _NOTEBOOK_STYLE,
                 [("Notebook.client", {"sticky": "nswe"})],
             )
-            style.layout(
-                "TNotebook.Tab",
-                [
-                    (
-                        "Notebook.padding",
-                        {
-                            "sticky": "nswe",
-                            "children": [
-                                ("Notebook.label", {"sticky": ""}),
-                            ],
-                        },
-                    )
-                ],
-            )
+            style.layout(f"{_NOTEBOOK_STYLE}.Tab", [])
         except tk.TclError:
             pass
         style.configure(
-            "TNotebook",
+            _NOTEBOOK_STYLE,
             background=_WHITE,
             borderwidth=0,
             relief="flat",
@@ -184,26 +199,6 @@ class SettingsWindow:
             darkcolor=_WHITE,
             bordercolor=_WHITE,
             tabmargins=(0, 0, 0, 0),
-        )
-        style.configure(
-            "TNotebook.Tab",
-            background=_WHITE,
-            foreground=_TEXT,
-            padding=(14, 6),
-            borderwidth=0,
-            relief="flat",
-            lightcolor=_WHITE,
-            darkcolor=_WHITE,
-            bordercolor=_WHITE,
-            focuscolor=_WHITE,
-        )
-        style.map(
-            "TNotebook.Tab",
-            background=[("selected", _HOVER), ("active", _HOVER)],
-            foreground=[("selected", _TEXT)],
-            lightcolor=[("selected", _WHITE), ("active", _WHITE)],
-            darkcolor=[("selected", _WHITE), ("active", _WHITE)],
-            bordercolor=[("selected", _WHITE), ("active", _WHITE)],
         )
         style.configure(
             "TLabelframe",
@@ -220,58 +215,91 @@ class SettingsWindow:
             "TButton",
             background=_WHITE,
             foreground=_TEXT,
-            bordercolor=_BORDER,
+            bordercolor=_WHITE,
             lightcolor=_WHITE,
-            darkcolor=_BORDER,
-            relief="solid",
-            borderwidth=1,
-            padding=(10, 4),
+            darkcolor=_WHITE,
+            relief="flat",
+            borderwidth=0,
+            padding=(8, 4),
+            focuscolor=_WHITE,
         )
         style.map(
             "TButton",
-            background=[
-                ("disabled", _HOVER),
-                ("active", _HOVER),
-                ("pressed", _HOVER),
-            ],
+            background=[("active", _HOVER), ("pressed", _HOVER)],
+            bordercolor=[("active", _HOVER), ("pressed", _HOVER)],
+            relief=[("pressed", "flat"), ("active", "flat")],
             foreground=[("disabled", "#9aa0a6")],
-            bordercolor=[("active", "#bdc1c6"), ("pressed", "#bdc1c6")],
         )
+        try:
+            style.layout(
+                "TButton",
+                [
+                    (
+                        "Button.padding",
+                        {
+                            "sticky": "nswe",
+                            "children": [("Button.label", {"sticky": "nswe"})],
+                        },
+                    )
+                ],
+            )
+        except tk.TclError:
+            pass
         style.configure(
             "TEntry",
             fieldbackground=_WHITE,
             background=_WHITE,
             foreground=_TEXT,
-            bordercolor=_BORDER,
-            lightcolor=_BORDER,
-            darkcolor=_BORDER,
+            bordercolor=_BORDER_INPUT,
+            lightcolor=_BORDER_INPUT,
+            darkcolor=_BORDER_INPUT,
             insertcolor=_TEXT,
+            borderwidth=1,
+            relief="flat",
             padding=3,
+        )
+        style.map(
+            "TEntry",
+            bordercolor=[("focus", _BORDER_INPUT), ("!focus", _BORDER_INPUT)],
+            lightcolor=[("focus", _BORDER_INPUT), ("!focus", _BORDER_INPUT)],
+            darkcolor=[("focus", _BORDER_INPUT), ("!focus", _BORDER_INPUT)],
         )
         style.configure(
             "TCombobox",
             fieldbackground=_WHITE,
             background=_WHITE,
             foreground=_TEXT,
-            bordercolor=_BORDER,
+            bordercolor=_BORDER_INPUT,
+            lightcolor=_BORDER_INPUT,
+            darkcolor=_BORDER_INPUT,
             arrowcolor=_TEXT,
+            borderwidth=1,
+            relief="flat",
             padding=3,
+        )
+        style.map(
+            "TCombobox",
+            bordercolor=[("focus", _BORDER_INPUT), ("!focus", _BORDER_INPUT)],
+            lightcolor=[("focus", _BORDER_INPUT), ("!focus", _BORDER_INPUT)],
+            darkcolor=[("focus", _BORDER_INPUT), ("!focus", _BORDER_INPUT)],
         )
         style.configure(
             "Treeview",
             background=_WHITE,
             fieldbackground=_WHITE,
             foreground=_TEXT,
-            bordercolor=_BORDER,
+            bordercolor=_BORDER_INPUT,
             lightcolor=_WHITE,
-            darkcolor=_BORDER,
+            darkcolor=_BORDER_INPUT,
+            borderwidth=1,
+            relief="flat",
             rowheight=22,
         )
         style.configure(
             "Treeview.Heading",
             background=_WHITE,
             foreground=_TEXT,
-            bordercolor=_BORDER,
+            bordercolor=_BORDER_INPUT,
             relief="flat",
         )
         style.map(
@@ -283,6 +311,24 @@ class SettingsWindow:
     def _tip(self, widget: tk.Misc, text: str) -> None:
         _HoverTip(widget, text)
 
+    def _section(
+        self,
+        parent: tk.Misc,
+        title: str,
+        tip: Optional[str] = None,
+        **pack_kwargs: Any,
+    ) -> ttk.Frame:
+        outer = ttk.Frame(parent)
+        if pack_kwargs:
+            outer.pack(**pack_kwargs)
+        head = ttk.Label(outer, text=title)
+        head.pack(anchor=tk.W, pady=(0, 4))
+        if tip:
+            self._tip(head, tip)
+        inner = ttk.Frame(outer)
+        inner.pack(fill=tk.X)
+        return inner
+
     def _style_text(self, widget: tk.Text) -> None:
         widget.configure(
             background=_WHITE,
@@ -290,10 +336,71 @@ class SettingsWindow:
             relief=tk.FLAT,
             borderwidth=0,
             highlightthickness=1,
-            highlightbackground=_BORDER,
-            highlightcolor=_BORDER,
+            highlightbackground=_BORDER_INPUT,
+            highlightcolor=_BORDER_INPUT,
             insertbackground=_TEXT,
         )
+
+        def _keep_border(_event: object = None) -> None:
+            widget.configure(
+                highlightbackground=_BORDER_INPUT,
+                highlightcolor=_BORDER_INPUT,
+            )
+
+        widget.bind("<FocusIn>", _keep_border, add="+")
+        widget.bind("<FocusOut>", _keep_border, add="+")
+
+    def _thin_entry(
+        self,
+        parent: tk.Misc,
+        *,
+        textvariable: Optional[tk.StringVar] = None,
+        width: int = 20,
+        show: Optional[str] = None,
+    ) -> ThinEntry:
+        return create_thin_entry(
+            parent, textvariable=textvariable, width=width, show=show
+        )
+
+    def _is_text_input(self, widget: tk.Misc | None) -> bool:
+        if widget is None:
+            return False
+        w: tk.Misc | None = widget
+        while w is not None:
+            if isinstance(w, (tk.Entry, tk.Text, tk.Listbox, ThinEntry)):
+                return True
+            try:
+                w = w.master
+            except (AttributeError, tk.TclError):
+                break
+        return False
+
+    def _on_background_click(self, event: tk.Event) -> None:
+        if self._is_text_input(event.widget):
+            return
+        try:
+            focus = self.win.focus_get()
+        except (KeyError, tk.TclError):
+            focus = None
+        if focus and self._is_text_input(focus):
+            self.win.focus_set()
+
+    def _install_defocus_on_click(self) -> None:
+        targets = [
+            self.win,
+            self._container,
+            self.tab_check,
+            self.tab_sheet,
+            self.tab_pages,
+            self.tab_webhook,
+            self.tab_carrier,
+            self.tab_welcome,
+            self.tab_browser,
+        ]
+        if hasattr(self, "_welcome_canvas"):
+            targets.append(self._welcome_canvas)
+        for widget in targets:
+            widget.bind("<Button-1>", self._on_background_click, add="+")
 
     def _style_embedded_text(self, widget: tk.Text) -> None:
         widget.configure(
@@ -303,6 +410,10 @@ class SettingsWindow:
             borderwidth=0,
             highlightthickness=0,
             insertbackground=_TEXT,
+        )
+        bind_unicode_editing(
+            widget,
+            after_change=lambda w=widget: self._autosize_welcome_text(w),
         )
 
     # ----- Checklist -----
@@ -351,7 +462,7 @@ class SettingsWindow:
 
         ttk.Label(grid, text="Sheet ID:").grid(row=0, column=0, sticky=tk.W, pady=4)
         self.var_sheet_id = tk.StringVar(value=sheet.get("sheet_id") or "")
-        ttk.Entry(grid, textvariable=self.var_sheet_id, width=56).grid(
+        self._thin_entry(grid, textvariable=self.var_sheet_id, width=56).grid(
             row=0, column=1, sticky=tk.EW, pady=4, padx=(8, 0)
         )
 
@@ -360,16 +471,18 @@ class SettingsWindow:
         )
         names = sheet.get("sheet_names") or []
         self.var_sheet_names = tk.StringVar(value=", ".join(names))
-        ttk.Entry(grid, textvariable=self.var_sheet_names, width=56).grid(
+        self._thin_entry(grid, textvariable=self.var_sheet_names, width=56).grid(
             row=1, column=1, sticky=tk.EW, pady=4, padx=(8, 0)
         )
         grid.columnconfigure(1, weight=1)
 
-        cred_frm = ttk.LabelFrame(frm, text="Google Service Account JSON")
-        cred_frm.pack(fill=tk.X, padx=10, pady=8)
-        self._tip(
-            cred_frm,
+        cred_frm = self._section(
+            frm,
+            "Google Service Account JSON",
             "บันทึกไปที่ no_api_send_bill และ no_api_send_bill_manual (sync ค่าเดียวกัน)",
+            fill=tk.X,
+            padx=10,
+            pady=8,
         )
         has = self.io.creds_path.is_file()
         self.var_creds_status = tk.StringVar(
@@ -423,35 +536,39 @@ class SettingsWindow:
     def _build_pages(self) -> None:
         frm = self.tab_pages
 
-        import_frm = ttk.LabelFrame(frm, text="นำเข้าจาก Long-Lived User Token")
-        import_frm.pack(fill=tk.X, padx=10, pady=(8, 4))
-        self._tip(
-            import_frm,
+        import_frm = self._section(
+            frm,
+            "นำเข้าจาก Long-Lived User Token",
             "วาง Long-Lived User Token แล้วกดดึงรายการเพจ — "
             "ระบบจะดึงชื่อเพจ / Page ID / Page Token ให้เลือกนำเข้า "
             "(ไม่เก็บ User Token ลงไฟล์)",
+            fill=tk.X,
+            padx=10,
+            pady=(8, 4),
         )
         row = ttk.Frame(import_frm)
         row.pack(fill=tk.X, padx=8, pady=8)
         ttk.Label(row, text="User Token").pack(side=tk.LEFT)
-        ttk.Entry(row, textvariable=self.var_user_token, width=52, show="*").pack(
+        self._thin_entry(row, textvariable=self.var_user_token, width=52, show="*").pack(
             side=tk.LEFT, padx=8, fill=tk.X, expand=True
         )
         ttk.Button(
             row, text="ดึงรายการเพจ…", command=self._fetch_pages_from_user_token
         ).pack(side=tk.LEFT)
 
-        biz = ttk.LabelFrame(frm, text="เพจ Business (ดึงด้วย Page ID)")
-        biz.pack(fill=tk.X, padx=10, pady=(0, 4))
-        self._tip(
-            biz,
+        biz = self._section(
+            frm,
+            "เพจ Business (ดึงด้วย Page ID)",
             "ถ้าเพจไม่โผล่จาก「ดึงรายการเพจ」 — ใส่ Page ID แล้วกดดึงเพจนี้ "
             "(ใช้ User Token ช่องด้านบน)",
+            fill=tk.X,
+            padx=10,
+            pady=(0, 4),
         )
         brow = ttk.Frame(biz)
         brow.pack(fill=tk.X, padx=8, pady=8)
         ttk.Label(brow, text="Page ID").pack(side=tk.LEFT)
-        ttk.Entry(brow, textvariable=self.var_business_page_id, width=28).pack(
+        self._thin_entry(brow, textvariable=self.var_business_page_id, width=28).pack(
             side=tk.LEFT, padx=8
         )
         ttk.Button(
@@ -788,7 +905,7 @@ class SettingsWindow:
                 parent=self.win,
             )
             self.refresh_checklist()
-            if hasattr(self, "cmb_welcome_page"):
+            if hasattr(self, "_page_picker"):
                 self._refresh_welcome_page_list()
             return True
         except Exception as e:
@@ -800,11 +917,13 @@ class SettingsWindow:
     def _build_webhook(self) -> None:
         frm = self.tab_webhook
         wh = self.io.load_webhook_fields()
-        box = ttk.LabelFrame(frm, text="Webhook / ngrok")
-        box.pack(fill=tk.X, padx=10, pady=10)
-        self._tip(
-            box,
+        box = self._section(
+            frm,
+            "Webhook / ngrok",
             "ค่าจะถูก merge ลง .env และ user_settings.json (ไม่ลบ key อื่นใน .env)",
+            fill=tk.X,
+            padx=10,
+            pady=10,
         )
         grid = ttk.Frame(box)
         grid.pack(fill=tk.X, padx=8, pady=8)
@@ -822,7 +941,7 @@ class SettingsWindow:
         ]
         for i, (lab, var) in enumerate(rows):
             ttk.Label(grid, text=lab).grid(row=i, column=0, sticky=tk.W, pady=4)
-            ttk.Entry(grid, textvariable=var, width=50).grid(
+            self._thin_entry(grid, textvariable=var, width=50).grid(
                 row=i, column=1, sticky=tk.EW, padx=8, pady=4
             )
         grid.columnconfigure(1, weight=1)
@@ -864,30 +983,28 @@ class SettingsWindow:
         self.var_hal_user = tk.StringVar(value=fields.get("HAL_USER") or "")
         self.var_hal_pass = tk.StringVar(value=fields.get("HAL_PASSWORD") or "")
 
-        an = ttk.LabelFrame(frm, text="Anousith")
-        an.pack(fill=tk.X, padx=10, pady=6)
+        an = self._section(frm, "Anousith", fill=tk.X, padx=10, pady=6)
         ag = ttk.Frame(an)
         ag.pack(fill=tk.X, padx=8, pady=6)
         ttk.Label(ag, text="User").grid(row=0, column=0, sticky=tk.W, pady=4)
-        ttk.Entry(ag, textvariable=self.var_anousith_user, width=40).grid(
+        self._thin_entry(ag, textvariable=self.var_anousith_user, width=40).grid(
             row=0, column=1, sticky=tk.EW, padx=8, pady=4
         )
         ttk.Label(ag, text="Password").grid(row=1, column=0, sticky=tk.W, pady=4)
-        ttk.Entry(ag, textvariable=self.var_anousith_pass, width=40, show="*").grid(
+        self._thin_entry(ag, textvariable=self.var_anousith_pass, width=40, show="*").grid(
             row=1, column=1, sticky=tk.EW, padx=8, pady=4
         )
         ag.columnconfigure(1, weight=1)
 
-        hal = ttk.LabelFrame(frm, text="HAL Express")
-        hal.pack(fill=tk.X, padx=10, pady=6)
+        hal = self._section(frm, "HAL Express", fill=tk.X, padx=10, pady=6)
         hg = ttk.Frame(hal)
         hg.pack(fill=tk.X, padx=8, pady=6)
         ttk.Label(hg, text="User").grid(row=0, column=0, sticky=tk.W, pady=4)
-        ttk.Entry(hg, textvariable=self.var_hal_user, width=40).grid(
+        self._thin_entry(hg, textvariable=self.var_hal_user, width=40).grid(
             row=0, column=1, sticky=tk.EW, padx=8, pady=4
         )
         ttk.Label(hg, text="Password").grid(row=1, column=0, sticky=tk.W, pady=4)
-        ttk.Entry(hg, textvariable=self.var_hal_pass, width=40, show="*").grid(
+        self._thin_entry(hg, textvariable=self.var_hal_pass, width=40, show="*").grid(
             row=1, column=1, sticky=tk.EW, padx=8, pady=4
         )
         hg.columnconfigure(1, weight=1)
@@ -931,10 +1048,41 @@ class SettingsWindow:
     ) -> None:
         widget.update_idletasks()
         try:
-            lines = int(widget.index("end-1c").split(".")[0])
-        except (tk.TclError, ValueError):
+            count = widget.count("1.0", "end-1c", "displaylines")
+            if not count:
+                lines = min_lines
+            else:
+                lines = int(count[0]) if isinstance(count, tuple) else int(count)
+                if lines < 1:
+                    lines = min_lines
+        except (tk.TclError, ValueError, TypeError):
             lines = min_lines
         widget.configure(height=max(min_lines, min(max_lines, lines)))
+
+    def _reflow_welcome_texts(self) -> None:
+        for widget in getattr(self, "_welcome_texts", {}).values():
+            self._autosize_welcome_text(widget)
+
+    def _schedule_welcome_reflow(self) -> None:
+        after_id = getattr(self, "_welcome_reflow_after", None)
+        if after_id:
+            self.win.after_cancel(after_id)
+        self._welcome_reflow_after = self.win.after_idle(self._reflow_welcome_texts)
+
+    def _make_welcome_text(self, parent: tk.Misc, *, bordered: bool) -> tk.Text:
+        txt = tk.Text(
+            parent,
+            height=2,
+            width=1,
+            wrap=tk.WORD,
+            font=("Segoe UI", 9),
+        )
+        if bordered:
+            self._style_embedded_text(txt)
+        else:
+            self._style_text(txt)
+        self._bind_welcome_text_autosize(txt)
+        return txt
 
     def _bind_welcome_text_autosize(self, widget: tk.Text) -> None:
         def _on_modified(_event=None) -> None:
@@ -959,9 +1107,14 @@ class SettingsWindow:
         self.var_msg_off = tk.BooleanVar(value=bool(g.get("messenger_auto_replies_disabled")))
         self.var_generic_off = tk.BooleanVar(value=bool(g.get("generic_reply_disabled")))
 
-        top = ttk.LabelFrame(frm, text="ทั้งระบบ")
-        top.pack(fill=tk.X, padx=10, pady=(8, 4))
-        self._tip(top, "ตั้งค่า auto-reply ทั้งระบบ — ข้อความและสื่อด้านล่างเป็นรายเพจ")
+        top = self._section(
+            frm,
+            "ทั้งระบบ",
+            "ตั้งค่า auto-reply ทั้งระบบ — ข้อความและสื่อด้านล่างเป็นรายเพจ",
+            fill=tk.X,
+            padx=10,
+            pady=(8, 4),
+        )
         ttk.Checkbutton(
             top,
             text="ปิด auto-reply Messenger (welcome / ราคา / คีย์เวิร์ด)",
@@ -982,11 +1135,13 @@ class SettingsWindow:
         pick.pack(fill=tk.X, padx=10, pady=6)
         ttk.Label(pick, text="เพจ").pack(side=tk.LEFT)
         self.var_welcome_page = tk.StringVar()
-        self.cmb_welcome_page = ttk.Combobox(
-            pick, textvariable=self.var_welcome_page, state="readonly", width=36
+        self._page_picker = SearchablePagePicker(
+            pick,
+            self.var_welcome_page,
+            on_select=self._load_welcome_page,
+            width=32,
         )
-        self.cmb_welcome_page.pack(side=tk.LEFT, padx=8)
-        self.cmb_welcome_page.bind("<<ComboboxSelected>>", lambda _e: self._load_welcome_page())
+        self._page_picker.pack(side=tk.LEFT, padx=8)
         ttk.Button(pick, text="รีเฟรชรายชื่อเพจ", command=self._refresh_welcome_page_list).pack(
             side=tk.LEFT
         )
@@ -1019,9 +1174,7 @@ class SettingsWindow:
         )
         self._welcome_canvas.bind(
             "<Configure>",
-            lambda e: self._welcome_canvas.itemconfigure(
-                self._welcome_canvas_window, width=e.width
-            ),
+            self._on_welcome_canvas_configure,
         )
         self._welcome_canvas.bind(
             "<Enter>",
@@ -1048,6 +1201,7 @@ class SettingsWindow:
         }
         self._welcome_texts: Dict[str, tk.Text] = {}
         self._welcome_media_panels: Dict[str, MediaThumbnailPanel] = {}
+        self._welcome_reflow_after: Optional[str] = None
         row = 0
         for key in PAGE_REPLY_TEXT_KEYS:
             ttk.Label(self._welcome_body, text=labels.get(key, key)).grid(
@@ -1060,14 +1214,13 @@ class SettingsWindow:
                     self._welcome_body,
                     bg=_WHITE,
                     highlightthickness=1,
-                    highlightbackground=_BORDER,
-                    highlightcolor=_BORDER,
+                    highlightbackground=_BORDER_INPUT,
+                    highlightcolor=_BORDER_INPUT,
                 )
                 box.grid(row=row, column=0, sticky=tk.EW, pady=(0, 4))
-                txt = tk.Text(box, height=2, wrap=tk.WORD, font=("Segoe UI", 9))
-                self._style_embedded_text(txt)
+                box.columnconfigure(0, weight=1)
+                txt = self._make_welcome_text(box, bordered=True)
                 txt.pack(fill=tk.X, padx=4, pady=(4, 2))
-                self._bind_welcome_text_autosize(txt)
                 self._welcome_texts[key] = txt
                 panel = MediaThumbnailPanel(
                     box,
@@ -1078,10 +1231,8 @@ class SettingsWindow:
                 panel.pack(fill=tk.X, padx=4, pady=(0, 4))
                 self._welcome_media_panels[kind] = panel
             else:
-                txt = tk.Text(self._welcome_body, height=2, wrap=tk.WORD, font=("Segoe UI", 9))
-                self._style_text(txt)
+                txt = self._make_welcome_text(self._welcome_body, bordered=False)
                 txt.grid(row=row, column=0, sticky=tk.EW, pady=(0, 4))
-                self._bind_welcome_text_autosize(txt)
                 self._welcome_texts[key] = txt
             row += 1
         self._welcome_body.columnconfigure(0, weight=1)
@@ -1092,6 +1243,13 @@ class SettingsWindow:
 
         self._welcome_loaded_page = ""
         self._refresh_welcome_page_list()
+        self._schedule_welcome_reflow()
+
+    def _on_welcome_canvas_configure(self, event: tk.Event) -> None:
+        self._welcome_canvas.itemconfigure(
+            self._welcome_canvas_window, width=event.width
+        )
+        self._schedule_welcome_reflow()
 
     def _on_welcome_mousewheel(self, event) -> None:
         if event.delta:
@@ -1115,7 +1273,7 @@ class SettingsWindow:
 
     def _refresh_welcome_page_list(self) -> None:
         names = self._real_page_names_for_welcome()
-        self.cmb_welcome_page["values"] = names
+        self._page_picker.set_values(names)
         if names:
             cur = self.var_welcome_page.get()
             if cur not in names:
@@ -1252,19 +1410,21 @@ class SettingsWindow:
             value=us.get("hal_user_data_dir") or "hal_browser_profile"
         )
 
-        box = ttk.LabelFrame(frm, text="Path")
-        box.pack(fill=tk.X, padx=10, pady=6)
-        self._tip(
-            box,
+        box = self._section(
+            frm,
+            "Path",
             "โฟลเดอร์เก็บ session เบราว์เซอร์ (cookies) สำหรับส่งบิล Facebook และถ่ายบิล HAL — "
             "กดปุ่มเปิดเบราว์เซอร์ ล็อกอินให้เสร็จ แล้วปิดหน้าต่าง — session อยู่ในโฟลเดอร์นี้ "
             "(อย่า commit โฟลเดอร์ profile)",
+            fill=tk.X,
+            padx=10,
+            pady=6,
         )
         g = ttk.Frame(box)
         g.pack(fill=tk.X, padx=8, pady=8)
 
         ttk.Label(g, text="Facebook profile").grid(row=0, column=0, sticky=tk.W, pady=4)
-        ttk.Entry(g, textvariable=self.var_fb_profile, width=48).grid(
+        self._thin_entry(g, textvariable=self.var_fb_profile, width=48).grid(
             row=0, column=1, sticky=tk.EW, padx=8, pady=4
         )
         ttk.Button(g, text="Browse…", command=self._browse_fb_profile).grid(
@@ -1272,7 +1432,7 @@ class SettingsWindow:
         )
 
         ttk.Label(g, text="HAL profile").grid(row=1, column=0, sticky=tk.W, pady=4)
-        ttk.Entry(g, textvariable=self.var_hal_profile, width=48).grid(
+        self._thin_entry(g, textvariable=self.var_hal_profile, width=48).grid(
             row=1, column=1, sticky=tk.EW, padx=8, pady=4
         )
         ttk.Button(g, text="Browse…", command=self._browse_hal_profile).grid(

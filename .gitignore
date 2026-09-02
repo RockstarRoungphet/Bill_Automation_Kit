@@ -13,10 +13,17 @@ page_token.json
 google_credentials.json
 user_settings.json
 user_messages.json
+page_reply_config.json
 
-# Secrets only under config/ (starter placeholders sheet/map may be committed)
+# Secrets only under config/
 no_api_send_bill/config/google_credentials.json
 # page_token.json covered by *token*.json above
+
+# Machine-local config (seeded from config_templates/ on first Settings open)
+no_api_send_bill/config/sheet_config.json
+no_api_send_bill/config/page_name_to_id.json
+no_api_send_bill_manual/config/sheet_config.json
+no_api_send_bill_manual/config/page_name_to_id.json
 
 # Python
 __pycache__/
@@ -60,6 +67,10 @@ last_message_by_psid.json
 last_promo_sent.json
 phone_detected_psid.json
 psid_name_cache.json
+
+# Local dev artifacts
+_font_test.txt
+settings/fonts/
 
 # IDE
 .cursor/
