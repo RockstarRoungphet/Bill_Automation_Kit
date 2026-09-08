@@ -8,10 +8,18 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Dict, List, Optional
 
-from settings.config_io import ConfigIO, StatusItem, PAGE_REPLY_TEXT_KEYS
+from settings.config_io import (
+    ConfigIO,
+    StatusItem,
+    PAGE_REPLY_TEXT_KEYS,
+    collect_keyword_media_refs,
+    format_keyword_list,
+    normalize_keyword_replies,
+    parse_keyword_list,
+)
 from settings.unicode_input import bind_unicode_editing
 from settings.graph_page import GraphPageError, fetch_page_by_id, list_pages_from_user_token
-from settings.media_thumbnail_panel import MediaThumbnailPanel
+from settings.media_thumbnail_panel import KeywordMediaPanel, MediaThumbnailPanel
 from settings.searchable_page_picker import SearchablePagePicker
 from settings.thin_entry import ThinEntry, create_thin_entry
 from settings.ui_scrollbar import create_vertical_scrollbar
@@ -19,6 +27,7 @@ from settings.underline_tab_bar import UnderlineTabBar
 from settings.open_browser_profile import (
     FACEBOOK_INBOX_URL,
     HAL_LOGIN_URL,
+    WHATSAPP_WEB_URL,
     open_persistent_login,
 )
 
@@ -162,7 +171,6 @@ class SettingsWindow:
         ttk.Button(bottom, text="รีเฟรช Checklist", command=self.refresh_checklist).pack(
             side=tk.LEFT
         )
-        ttk.Button(bottom, text="ปิด", command=self.win.destroy).pack(side=tk.RIGHT)
         ttk.Button(bottom, text="บันทึกทั้งหมด", command=self.save_all).pack(
             side=tk.RIGHT, padx=(0, 8)
         )
@@ -1081,6 +1089,10 @@ class SettingsWindow:
             self._style_embedded_text(txt)
         else:
             self._style_text(txt)
+            bind_unicode_editing(
+                txt,
+                after_change=lambda w=txt: self._autosize_welcome_text(w),
+            )
         self._bind_welcome_text_autosize(txt)
         return txt
 
@@ -1237,6 +1249,29 @@ class SettingsWindow:
             row += 1
         self._welcome_body.columnconfigure(0, weight=1)
 
+        self._keyword_reply_rows: List[Dict[str, Any]] = []
+        ttk.Label(
+            self._welcome_body,
+            text="ตอบตามคีย์เวิร์ด (กำหนดเอง)",
+        ).grid(row=row, column=0, sticky=tk.W, pady=(16, 0))
+        row += 1
+        ttk.Label(
+            self._welcome_body,
+            text="ตั้งคีย์เวิร์ดหลายแบบต่อ 1 คำตอบ (คั่นด้วย , หรือขึ้นบรรทัดใหม่) — หลังบันทึกต้องรีสตาร์ท webhook",
+            wraplength=720,
+        ).grid(row=row, column=0, sticky=tk.W, pady=(0, 4))
+        row += 1
+        self._keyword_replies_rows_frame = ttk.Frame(self._welcome_body)
+        self._keyword_replies_rows_frame.grid(row=row, column=0, sticky=tk.EW)
+        row += 1
+        kw_btn_row = ttk.Frame(self._welcome_body)
+        kw_btn_row.grid(row=row, column=0, sticky=tk.W, pady=(4, 8))
+        ttk.Button(
+            kw_btn_row,
+            text="+ เพิ่มคีย์เวิร์ด",
+            command=lambda: self._add_keyword_reply_row(),
+        ).pack(side=tk.LEFT)
+
         bf = ttk.Frame(frm)
         bf.pack(fill=tk.X, padx=10, pady=(0, 8))
         ttk.Button(bf, text="บันทึก Welcome", command=self.save_welcome).pack(side=tk.RIGHT)
@@ -1244,6 +1279,125 @@ class SettingsWindow:
         self._welcome_loaded_page = ""
         self._refresh_welcome_page_list()
         self._schedule_welcome_reflow()
+
+    def _clear_keyword_reply_rows(self) -> None:
+        for row in getattr(self, "_keyword_reply_rows", []):
+            frame = row.get("frame")
+            if frame is not None:
+                frame.destroy()
+        self._keyword_reply_rows = []
+        self._schedule_welcome_reflow()
+
+    def _add_keyword_reply_row(
+        self,
+        keywords: str = "",
+        reply: str = "",
+        media: Optional[List[str]] = None,
+    ) -> None:
+        card = tk.Frame(
+            self._keyword_replies_rows_frame,
+            bg=_WHITE,
+            highlightthickness=1,
+            highlightbackground=_BORDER_INPUT,
+            highlightcolor=_BORDER_INPUT,
+        )
+        card.pack(fill=tk.X, pady=(0, 8))
+        card.columnconfigure(0, weight=1)
+
+        header = ttk.Frame(card)
+        header.pack(fill=tk.X, padx=4, pady=(4, 0))
+        ttk.Label(header, text="ชุดคีย์เวิร์ด").pack(side=tk.LEFT)
+        ttk.Button(
+            header,
+            text="ลบ",
+            width=4,
+            command=lambda c=card: self._remove_keyword_reply_row(c),
+        ).pack(side=tk.RIGHT)
+
+        ttk.Label(card, text="คีย์เวิร์ด (คั่นด้วย , หรือขึ้นบรรทัดใหม่)").pack(
+            anchor=tk.W, padx=4, pady=(4, 0)
+        )
+        kw_txt = self._make_welcome_text(card, bordered=False)
+        kw_txt.pack(fill=tk.X, padx=4, pady=(0, 2))
+        if keywords:
+            kw_txt.insert("1.0", keywords)
+            self._autosize_welcome_text(kw_txt)
+
+        ttk.Label(card, text="ข้อความตอบกลับ").pack(anchor=tk.W, padx=4, pady=(4, 0))
+        reply_box = tk.Frame(
+            card,
+            bg=_WHITE,
+            highlightthickness=1,
+            highlightbackground=_BORDER_INPUT,
+            highlightcolor=_BORDER_INPUT,
+        )
+        reply_box.pack(fill=tk.X, padx=4, pady=(0, 4))
+        reply_box.columnconfigure(0, weight=1)
+        reply_txt = self._make_welcome_text(reply_box, bordered=True)
+        reply_txt.pack(fill=tk.X, padx=4, pady=(4, 2))
+        if reply:
+            reply_txt.insert("1.0", reply)
+            self._autosize_welcome_text(reply_txt)
+
+        media_names: List[str] = list(media or [])
+        media_panel = KeywordMediaPanel(
+            reply_box,
+            self.io,
+            self._welcome_page_name,
+            media_names,
+        )
+        media_panel.pack(fill=tk.X, padx=4, pady=(0, 4))
+        media_panel.refresh()
+
+        row_data = {
+            "frame": card,
+            "keywords": kw_txt,
+            "reply": reply_txt,
+            "media_names": media_names,
+            "media_panel": media_panel,
+        }
+        self._keyword_reply_rows.append(row_data)
+        self._schedule_welcome_reflow()
+
+    def _remove_keyword_reply_row(self, card: tk.Frame) -> None:
+        self._keyword_reply_rows = [
+            r for r in self._keyword_reply_rows if r.get("frame") is not card
+        ]
+        card.destroy()
+        self._schedule_welcome_reflow()
+
+    def _keyword_replies_from_ui(self) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for row in getattr(self, "_keyword_reply_rows", []):
+            kw_widget = row.get("keywords")
+            reply_widget = row.get("reply")
+            if kw_widget is None or reply_widget is None:
+                continue
+            keywords = parse_keyword_list(kw_widget.get("1.0", tk.END))
+            reply = reply_widget.get("1.0", tk.END).rstrip("\n").strip()
+            media_names = list(row.get("media_names") or [])
+            if keywords and (reply or media_names):
+                entry: Dict[str, Any] = {"keywords": keywords, "reply": reply}
+                if media_names:
+                    entry["media"] = media_names
+                rows.append(entry)
+        return rows
+
+    def _load_keyword_replies_into_ui(self, data: Dict[str, Any]) -> None:
+        self._clear_keyword_reply_rows()
+        rules = normalize_keyword_replies(data.get("keyword_replies"))
+        for rule in rules:
+            self._add_keyword_reply_row(
+                format_keyword_list(rule.get("keywords") or []),
+                str(rule.get("reply") or ""),
+                list(rule.get("media") or []),
+            )
+
+    def _reload_keyword_media_panels(self) -> None:
+        for row in getattr(self, "_keyword_reply_rows", []):
+            panel = row.get("media_panel")
+            if panel is not None:
+                panel.refresh()
 
     def _on_welcome_canvas_configure(self, event: tk.Event) -> None:
         self._welcome_canvas.itemconfigure(
@@ -1287,6 +1441,7 @@ class SettingsWindow:
             for widget in self._welcome_texts.values():
                 widget.delete("1.0", tk.END)
                 self._autosize_welcome_text(widget)
+            self._clear_keyword_reply_rows()
             self._welcome_loaded_page = ""
             self._reload_media_panels()
 
@@ -1299,6 +1454,7 @@ class SettingsWindow:
             widget.delete("1.0", tk.END)
             widget.insert("1.0", str(data.get(key) or ""))
             self._autosize_welcome_text(widget)
+        self._load_keyword_replies_into_ui(data)
         self.var_welcome_hint.set("" if name else "")
         self._welcome_loaded_page = name
         self._reload_media_panels()
@@ -1306,6 +1462,14 @@ class SettingsWindow:
     def _reload_media_panels(self) -> None:
         for panel in getattr(self, "_welcome_media_panels", {}).values():
             panel.refresh()
+        self._reload_keyword_media_panels()
+
+    def _gc_keyword_media_for_page(self, page_name: str, rules: List[Dict[str, Any]]) -> None:
+        try:
+            refs = collect_keyword_media_refs(rules)
+            self.io.gc_unused_keyword_media(page_name, refs)
+        except ValueError:
+            pass
 
     def save_welcome(self) -> bool:
         name = self.var_welcome_page.get().strip()
@@ -1317,15 +1481,20 @@ class SettingsWindow:
             )
             return False
         try:
+            keyword_rules = self._keyword_replies_from_ui()
             self.io.save_page_reply_config(
                 self._welcome_globals(),
                 name,
                 self._welcome_fields_from_ui(),
+                keyword_replies=keyword_rules,
             )
+            self._gc_keyword_media_for_page(name, keyword_rules)
+            self._reload_keyword_media_panels()
             self._welcome_loaded_page = name
             messagebox.showinfo(
                 "บันทึก",
-                f"บันทึก Welcome ของเพจ «{name}» ลง page_reply_config.json แล้ว",
+                f"บันทึก Welcome ของเพจ «{name}» ลง page_reply_config.json แล้ว\n\n"
+                "รีสตาร์ท webhook server เพื่อให้คีย์เวิร์ดใหม่มีผล",
                 parent=self.win,
             )
             return True
@@ -1336,11 +1505,16 @@ class SettingsWindow:
     def save_welcome_silent(self) -> bool:
         name = self.var_welcome_page.get().strip()
         try:
+            keyword_rules = self._keyword_replies_from_ui() if name else []
             self.io.save_page_reply_config(
                 self._welcome_globals(),
                 name or None,
                 self._welcome_fields_from_ui() if name else None,
+                keyword_replies=keyword_rules if name else None,
             )
+            if name:
+                self._gc_keyword_media_for_page(name, keyword_rules)
+                self._reload_keyword_media_panels()
             return True
         except Exception as e:
             messagebox.showerror("Welcome", str(e), parent=self.win)
@@ -1413,7 +1587,8 @@ class SettingsWindow:
         box = self._section(
             frm,
             "Path",
-            "โฟลเดอร์เก็บ session เบราว์เซอร์ (cookies) สำหรับส่งบิล Facebook และถ่ายบิล HAL — "
+            "โฟลเดอร์เก็บ session เบราว์เซอร์ (cookies) สำหรับส่งบิล Facebook, WhatsApp Web "
+            "(ใช้ Facebook profile เดียวกัน — scan QR) และถ่ายบิล HAL — "
             "กดปุ่มเปิดเบราว์เซอร์ ล็อกอินให้เสร็จ แล้วปิดหน้าต่าง — session อยู่ในโฟลเดอร์นี้ "
             "(อย่า commit โฟลเดอร์ profile)",
             fill=tk.X,
@@ -1454,6 +1629,12 @@ class SettingsWindow:
             command=self._open_hal_login,
         )
         self.btn_hal_login.pack(side=tk.LEFT, padx=(0, 8))
+        self.btn_wa_login = ttk.Button(
+            btns,
+            text="เปิดเบราว์เซอร์ WhatsApp (ล็อกอิน)",
+            command=self._open_whatsapp_login,
+        )
+        self.btn_wa_login.pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(btns, text="บันทึก Browser Profile", command=self.save_browser_profile).pack(
             side=tk.RIGHT
         )
@@ -1527,8 +1708,19 @@ class SettingsWindow:
             "HAL",
         )
 
+    def _open_whatsapp_login(self) -> None:
+        self._open_profile_login(
+            self.var_fb_profile.get() or "no_api_send_bill/browser_profile",
+            WHATSAPP_WEB_URL,
+            "WhatsApp",
+        )
+
     def _set_browser_login_busy(self, busy: bool) -> None:
-        for btn in (getattr(self, "btn_fb_login", None), getattr(self, "btn_hal_login", None)):
+        for btn in (
+            getattr(self, "btn_fb_login", None),
+            getattr(self, "btn_hal_login", None),
+            getattr(self, "btn_wa_login", None),
+        ):
             if btn is None:
                 continue
             try:

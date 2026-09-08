@@ -18,12 +18,13 @@ import threading
 import urllib.parse
 import os
 import re
-from typing import Optional
+from typing import List, Optional
 
 import requests
 
 from graph_media_send import (
     discover_page_media_ordered,
+    resolve_named_media_paths,
     send_media_paths_ordered,
     send_text_message,
 )
@@ -39,6 +40,7 @@ BASE_URL = os.getenv("BASE_URL", "http://localhost:5000")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PRODUCT_IMAGES_DIR = os.path.join(SCRIPT_DIR, "product_images")
 PRICE_IMAGES_DIR = os.path.join(SCRIPT_DIR, "price_images")
+KEYWORD_IMAGES_DIR = os.path.join(SCRIPT_DIR, "keyword_images")
 WELCOME_SEND_DELAY = float(os.getenv("WELCOME_SEND_DELAY", "0.6"))
 
 ORDER_PSID_FILE = "order_psid.json"
@@ -664,6 +666,86 @@ def _extract_order_id(text: str) -> Optional[str]:
     return m.group(1).strip() if m else None
 
 
+def _match_keyword_reply(user_message: str, page_id: str) -> Optional[dict]:
+    """Match per-page keyword_replies rules (first match wins)."""
+    cfg = PAGE_WELCOME_CONFIG.get(page_id) or {}
+    rules = cfg.get("keyword_replies")
+    if not isinstance(rules, list) or not rules:
+        return None
+
+    text = (user_message or "").strip()
+    if not text:
+        return None
+    tl = text.lower()
+    tn = _normalize_text(text)
+
+    for idx, rule in enumerate(rules, start=1):
+        if not isinstance(rule, dict):
+            continue
+        reply = str(rule.get("reply") or "").strip()
+        media_raw = rule.get("media")
+        media: List[str] = []
+        if isinstance(media_raw, list):
+            for item in media_raw:
+                name = os.path.basename(str(item or "").strip())
+                if name and name not in media:
+                    media.append(name)
+        if not reply and not media:
+            continue
+        kws = rule.get("keywords")
+        if not isinstance(kws, list):
+            continue
+        for kw in kws:
+            kw_s = str(kw or "").strip()
+            if not kw_s:
+                continue
+            if kw_s in text or kw_s.lower() in tl:
+                print(f"   🔑 keyword_reply: rule={idx} keyword='{kw_s}'")
+                return {"reply": reply, "media": media, "rule_index": idx}
+            kw_n = _normalize_text(kw_s)
+            if kw_n and kw_n in tn:
+                print(f"   🔑 keyword_reply: rule={idx} keyword='{kw_s}' (normalized)")
+                return {"reply": reply, "media": media, "rule_index": idx}
+    return None
+
+
+def send_keyword_reply_bundle(
+    page_id: str, recipient_id: str, user_message: str
+) -> bool:
+    """ตอบตาม keyword_replies: ข้อความ + สื่อจาก keyword_images/<เพจ>/ ตาม media list."""
+    matched = _match_keyword_reply(user_message, page_id)
+    if not matched:
+        return False
+
+    page_token = PAGE_TOKENS.get(page_id)
+    if not page_token:
+        print(f"   ⚠️ ไม่พบ Page Token สำหรับเพจ {fmt_page(page_id)}")
+        return False
+
+    page_name = PAGE_NAMES.get(page_id) or ""
+    response_text = str(matched.get("reply") or "").strip()
+    media_names = matched.get("media") or []
+
+    if response_text:
+        send_text_message(page_id, page_token, recipient_id, response_text)
+        time.sleep(WELCOME_SEND_DELAY)
+
+    paths = resolve_named_media_paths(KEYWORD_IMAGES_DIR, page_name, media_names)
+    if paths:
+        send_media_paths_ordered(
+            page_id,
+            page_token,
+            recipient_id,
+            paths,
+            send_delay=WELCOME_SEND_DELAY,
+            log_prefix="Keyword ",
+        )
+    elif not response_text:
+        print(f"   ⚠️ keyword_reply rule={matched.get('rule_index')} — ไม่มีข้อความและไม่มีสื่อ")
+        return False
+    return True
+
+
 def generate_response(user_message: str, page_id: str = "") -> str:
     """สร้างข้อความตอบกลับตามคำที่ลูกค้าพิมพ์ (per-page → global fallback → generic คงที่)"""
     t = (user_message or "").strip()
@@ -1049,6 +1131,8 @@ def _process_webhook_body(body: dict) -> None:
                     if auto_off:
                         print(f"   ⏸️ messenger_auto_replies_disabled — ข้ามตอบราคา/คีย์เวิร์ดอัตโนมัติ")
                     elif send_price_reply_bundle(cur_page_id, sender_id, message_text):
+                        pass
+                    elif send_keyword_reply_bundle(cur_page_id, sender_id, message_text):
                         pass
                     else:
                         response_text = generate_response(message_text, cur_page_id)

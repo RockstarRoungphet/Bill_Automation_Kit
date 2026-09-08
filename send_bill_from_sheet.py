@@ -545,7 +545,11 @@ def _load_sheet_config():
     return sheet_id, sheet_names, credentials_path
 
 
-def main_notify_mode(mode: str, dry_run: bool = False):
+def main_notify_mode(
+    mode: str,
+    dry_run: bool = False,
+    page_filter: Optional[List[str]] = None,
+):
     """Notify mode (delivered/stock_out/stock_available): read sheet -> send text -> update Column V."""
     if mode == "delivered":
         mode_title = "แจ้งถึงแล้ว (notify-delivered)"
@@ -597,8 +601,19 @@ def main_notify_mode(mode: str, dry_run: bool = False):
         required_statuses=required_statuses,
     )
 
+    if page_filter:
+        allow = {p.lower().strip() for p in page_filter if str(p).strip()}
+        display = [p for p in page_filter if str(p).strip()]
+        before = len(rows)
+        rows = [r for r in rows if (r[1] or "").lower().strip() in allow]
+        print(f"🔍 กรองเฉพาะเพจ: {', '.join(display)} ({before} → {len(rows)} รายการ)")
+
     if not rows:
-        print(empty_hint)
+        if page_filter:
+            print("❌ ไม่พบแถวที่ต้องแจ้งสำหรับเพจที่เลือก")
+        else:
+            print(empty_hint)
+        print("RESIDUALS=0")
         sys.exit(0)
 
     print(f"📊 พบ {len(rows)} รายการที่ต้องแจ้ง")
@@ -654,10 +669,13 @@ def main_notify_mode(mode: str, dry_run: bool = False):
         print(f"ส่ง API ไม่สำเร็จ: {skipped_api} รายการ")
     if skipped_no_page:
         print(f"ไม่พบเพจใน token: {skipped_no_page} รายการ")
+    residuals = skipped_no_psid + skipped_api + skipped_no_page
+    print(f"RESIDUALS={residuals}")
 
     if notify_updates and not dry_run:
         print(f"\n📝 อัปเดต Column V ใน Google Sheet ({len(notify_updates)} แถว)...")
         batch_update_notified_delivered(sheet_id, notify_updates, credentials_path, value=result_value)
+    sys.exit(0)
 
 
 def main():
@@ -667,6 +685,20 @@ def main():
     notify_stock_out = "--notify-stock-out" in args
     notify_stock_available = "--notify-stock-available" in args
     args = [a for a in args if a not in ("--dry-run", "--notify-delivered", "--notify-stock-out", "--notify-stock-available")]
+
+    page_filter: Optional[List[str]] = None
+    if "--pages" in args:
+        i = args.index("--pages")
+        if i + 1 >= len(args) or str(args[i + 1]).startswith("--"):
+            print("❌ ต้องระบุรายชื่อเพจหลัง --pages เช่น --pages \"เพจ1,เพจ2\"")
+            sys.exit(1)
+        page_filter = [
+            p.strip() for p in str(args[i + 1]).split(",") if p.strip()
+        ]
+        if not page_filter:
+            print("❌ --pages ว่าง — ระบุอย่างน้อย 1 เพจ หรือไม่ใช้ flag นี้เพื่อส่งทั้งหมด")
+            sys.exit(1)
+        args = [a for j, a in enumerate(args) if j not in (i, i + 1)]
 
     notify_modes = [
         ("delivered", notify_delivered),
@@ -680,7 +712,7 @@ def main():
 
     # --- Notify mode ---
     if selected_notify_modes:
-        main_notify_mode(selected_notify_modes[0], dry_run)
+        main_notify_mode(selected_notify_modes[0], dry_run, page_filter=page_filter)
         return
 
     bills_dir: Optional[str] = None
@@ -708,7 +740,7 @@ def main():
         print("  python3 send_bill_from_sheet.py --csv <path_to_csv> [--bills-dir โฟลเดอร์] [--dry-run]")
         print("  python3 send_bill_from_sheet.py --sheet --notify-delivered [--dry-run]")
         print("  python3 send_bill_from_sheet.py --sheet --notify-stock-out [--dry-run]")
-        print("  python3 send_bill_from_sheet.py --sheet --notify-stock-available [--dry-run]")
+        print("  python3 send_bill_from_sheet.py --sheet --notify-stock-available [--pages \"เพจ1,เพจ2\"] [--dry-run]")
         sys.exit(1)
 
     # --- Load page tokens (multi-page) ---
@@ -742,6 +774,7 @@ def main():
 
     if not rows:
         print("❌ ไม่พบแถวที่ต้องส่ง (สถานะ 📦ລໍສົ່ງບິນ + มี Tracking ID + ยังไม่ส่ง)")
+        print("RESIDUALS=0")
         sys.exit(0)
 
     print(f"📊 พบ {len(rows)} รายการที่ต้องส่ง")
@@ -820,10 +853,13 @@ def main():
         print(f"ส่ง API ไม่สำเร็จ: {skipped_api} รายการ")
     if skipped_no_page:
         print(f"ไม่พบเพจใน token: {skipped_no_page} รายการ")
+    residuals = skipped_no_psid + skipped_api + skipped_no_page + skipped_no_image
+    print(f"RESIDUALS={residuals}")
 
     if sheet_updates and use_sheet and not dry_run:
         print(f"\n📝 อัปเดตวันที่ส่งใน Google Sheet ({len(sheet_updates)} แถว)...")
         batch_update_send_dates(sheet_id, sheet_updates, credentials_path)
+    sys.exit(0)
 
 
 if __name__ == "__main__":

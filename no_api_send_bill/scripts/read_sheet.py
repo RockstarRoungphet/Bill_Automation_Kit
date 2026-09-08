@@ -109,6 +109,15 @@ def _parse_data_rows(
                 continue
         elif status != status_filter:
             continue
+        # โหมดส่งบิล: ข้ามแถวที่มีวันที่ส่งใน Column R แล้ว
+        if status_filter == REQUIRED_STATUS and not is_text_only:
+            send_date = (
+                cells[SEND_DATE_COL_INDEX]
+                if SEND_DATE_COL_INDEX < len(cells)
+                else ""
+            )
+            if str(send_date).strip():
+                continue
         order_id = cells[order_col] if order_col < len(cells) else ""
         page_name = cells[page_name_col] if page_name_col < len(cells) else ""
         if not order_id or not page_name:
@@ -185,10 +194,11 @@ def read_rows_from_google_sheet(
     required_status: Optional[Union[str, Tuple[str, ...]]] = None,
     customer_name_map: Optional[Dict[str, str]] = None,
     phone_map: Optional[Dict[str, str]] = None,
-) -> List[Tuple[str, str, str, str]]:
+) -> Optional[List[Tuple[str, str, str, str]]]:
     """
     อ่าน Google Sheet โดยตรง (ต้องแชร์ Sheet ให้ Service Account แล้ว)
     คืนรายการ (order_id, page_name, tracking_id, carrier) หรือ (order_id, page_name, sheet_name, carrier) เมื่อโหมดแจ้งถึง
+    คืน None เมื่ออ่านชีตล้มเหลว (credentials / Sheet ID / ชื่อชีต)
 
     - required_status=None: ใช้ REQUIRED_STATUS (ລໍສົ່ງບິນ), row_map key = (order_id, tracking_id)
     - required_status=REQUIRED_STATUS_DELIVERED: ไม่ตรวจสอบคอลัมน์ Z, row_map key = (order_id, sheet_name)
@@ -201,7 +211,7 @@ def read_rows_from_google_sheet(
         from google.oauth2.service_account import Credentials
     except ImportError:
         print("❌ ต้องติดตั้ง: pip install gspread google-auth", file=sys.stderr)
-        return []
+        return None
 
     if not credentials_path:
         credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
@@ -212,7 +222,7 @@ def read_rows_from_google_sheet(
         credentials_path = os.path.normpath(default_path)
     if not os.path.exists(credentials_path):
         print(f"❌ ไม่พบไฟล์ credentials: {credentials_path}", file=sys.stderr)
-        return []
+        return None
 
     try:
         scopes = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -223,7 +233,7 @@ def read_rows_from_google_sheet(
         all_rows = worksheet.get_all_values()
     except Exception as e:
         print(f"❌ ไม่สามารถอ่าน Google Sheet ได้: {e}", file=sys.stderr)
-        return []
+        return None
 
     if not all_rows:
         return []
@@ -453,6 +463,9 @@ def main():
             sys.exit(1)
         sheet_id = args[i + 1]
         rows = read_rows_from_google_sheet(sheet_id, sheet_name=sheet_name, credentials_path=credentials_path)
+        if rows is None:
+            print("❌ อ่าน Google Sheet ไม่สำเร็จ")
+            sys.exit(1)
     elif len(args) < 1:
         print("ใช้: python3 read_sheet.py <path_to_csv> [--output json|text]")
         print("     python3 read_sheet.py --sheet <sheet_id> [--credentials <path>] [--sheet-name Sheet1] [--output json|text]")

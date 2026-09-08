@@ -4,6 +4,7 @@ Launcher UI — ໜ້າຕ່າງສຳລັບຮັນ run_manual.py ແ�
 ສະແດງສະຖານະຈາກ run_manual.py ແບບ real-time
 """
 import ctypes
+import json
 import os
 import queue
 import shutil
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import List, Optional
 
 try:
     import tkinter as tk
@@ -312,7 +314,259 @@ WEBHOOK_SCRIPT = PROJECT_ROOT / "messenger_webhook_server.py"
 SEND_BILL_API_SCRIPT = PROJECT_ROOT / "send_bill_from_sheet.py"
 NGROK_EXE = PROJECT_ROOT / "ngrok.exe"
 USER_SETTINGS_FILE = PROJECT_ROOT / "user_settings.json"
+PAGE_TOKEN_FILE = PROJECT_ROOT / "page_token.json"
 DEFAULT_FB_PROFILE = "no_api_send_bill/browser_profile"
+
+
+def _load_real_page_names() -> List[str]:
+    """Page names from page_token.json (skip placeholders / disabled)."""
+    if not PAGE_TOKEN_FILE.is_file():
+        return []
+    try:
+        raw = json.loads(PAGE_TOKEN_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    pages = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+    names: List[str] = []
+    seen = set()
+    for p in pages:
+        if not isinstance(p, dict) or p.get("enabled") is False:
+            continue
+        name = str(p.get("page_name") or "").strip()
+        pid = str(p.get("page_id") or "").strip()
+        if not name or name == "YourPageName":
+            continue
+        if not pid or pid in ("YOUR_FACEBOOK_PAGE_ID",) or pid.upper().startswith("YOUR_"):
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+    return names
+
+
+def _prompt_stock_available_pages(parent) -> Optional[List[str]]:
+    """Modal page picker for ແຈ້ງມີສິນຄ້າ.
+
+    Returns:
+      None — cancelled
+      [] — send all pages (omit --pages)
+      ["A", "B"] — filter to those pages
+    """
+    from settings.thin_entry import create_thin_entry
+    from settings.ui_scrollbar import create_vertical_scrollbar
+
+    _WHITE = "#ffffff"
+    _HOVER = "#f1f3f4"
+    _TEXT = "#202124"
+    _FONT = ("Segoe UI", 9)
+
+    page_names = _load_real_page_names()
+    if not page_names:
+        messagebox.showerror(
+            "ຜິດພາດ",
+            "ບໍ່ພົບເພຈໃນ page_token.json\nເພີ່ມເພຈໃນ Settings ກ່ອນ",
+            parent=parent,
+        )
+        return None
+
+    result: dict = {"value": None}
+    win = tk.Toplevel(parent)
+    win.title("ເລືອກເພຈ — ແຈ້ງມີສິນຄ້າ")
+    win.transient(parent)
+    win.geometry("420x460")
+    win.resizable(False, True)
+    win.configure(bg=_WHITE)
+
+    style = ttk.Style(win)
+    try:
+        style.theme_use("clam")
+    except Exception:
+        pass
+    style.configure("PagePick.TFrame", background=_WHITE)
+    style.configure("PagePick.TLabel", background=_WHITE, foreground=_TEXT)
+    style.configure(
+        "PagePick.TButton",
+        background=_WHITE,
+        foreground=_TEXT,
+        bordercolor=_WHITE,
+        lightcolor=_WHITE,
+        darkcolor=_WHITE,
+        relief="flat",
+        borderwidth=0,
+        padding=(4, 2),
+        focuscolor=_WHITE,
+    )
+    style.map(
+        "PagePick.TButton",
+        background=[("active", _HOVER), ("pressed", _HOVER)],
+        bordercolor=[("active", _HOVER), ("pressed", _HOVER)],
+    )
+
+    outer = ttk.Frame(win, style="PagePick.TFrame")
+    outer.pack(fill=tk.BOTH, expand=True)
+
+    ttk.Label(
+        outer,
+        text="ເລືອກສົ່ງທັງໝົດ ຫຼື ຕິກເພຈທີ່ຕ້ອງການ:",
+        style="PagePick.TLabel",
+    ).pack(anchor=tk.W, padx=12, pady=(12, 6))
+
+    search_row = ttk.Frame(outer, style="PagePick.TFrame")
+    search_row.pack(fill=tk.X, padx=12, pady=(0, 6))
+    ttk.Label(search_row, text="Search", style="PagePick.TLabel").pack(side=tk.LEFT)
+    search_var = tk.StringVar()
+    search_entry = create_thin_entry(search_row, textvariable=search_var, width=28)
+    search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+
+    tool = ttk.Frame(outer, style="PagePick.TFrame")
+    tool.pack(fill=tk.X, padx=12, pady=(0, 6))
+
+    canvas_fr = ttk.Frame(outer, style="PagePick.TFrame")
+    canvas_fr.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
+    canvas = tk.Canvas(canvas_fr, highlightthickness=0, bd=0, bg=_WHITE)
+    scroll = create_vertical_scrollbar(canvas_fr, command=canvas.yview)
+    inner = tk.Frame(canvas, bg=_WHITE)
+    inner.bind(
+        "<Configure>",
+        lambda _e: canvas.configure(scrollregion=canvas.bbox("all")),
+    )
+    canvas_window = canvas.create_window((0, 0), window=inner, anchor=tk.NW)
+
+    def _sync_inner_width(event: object = None) -> None:
+        canvas.itemconfigure(canvas_window, width=canvas.winfo_width())
+
+    canvas.bind("<Configure>", _sync_inner_width)
+    canvas.configure(yscrollcommand=scroll.set)
+    canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def _on_mousewheel(event) -> None:
+        delta = 0
+        if getattr(event, "delta", 0):
+            delta = -1 if event.delta > 0 else 1
+        elif getattr(event, "num", None) == 4:
+            delta = -1
+        elif getattr(event, "num", None) == 5:
+            delta = 1
+        if delta:
+            canvas.yview_scroll(delta, "units")
+
+    canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", _on_mousewheel))
+    canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+
+    vars_by_name: dict = {}
+    rows_by_name: dict = {}
+
+    def _set_row_bg(row: tk.Frame, cb: tk.Checkbutton, color: str) -> None:
+        row.configure(bg=color)
+        cb.configure(bg=color, activebackground=color)
+
+    for name in page_names:
+        var = tk.BooleanVar(value=True)
+        vars_by_name[name] = var
+        row = tk.Frame(inner, bg=_WHITE)
+        row.pack(fill=tk.X, anchor=tk.W)
+        cb = tk.Checkbutton(
+            row,
+            text=name,
+            variable=var,
+            anchor=tk.W,
+            justify=tk.LEFT,
+            font=_FONT,
+            fg=_TEXT,
+            bg=_WHITE,
+            activeforeground=_TEXT,
+            activebackground=_WHITE,
+            selectcolor=_WHITE,
+            highlightthickness=0,
+            bd=0,
+            relief=tk.FLAT,
+        )
+        cb.pack(fill=tk.X, padx=4, pady=3)
+
+        def _enter(_e, r=row, c=cb) -> None:
+            _set_row_bg(r, c, _HOVER)
+
+        def _leave(_e, r=row, c=cb) -> None:
+            _set_row_bg(r, c, _WHITE)
+
+        row.bind("<Enter>", _enter)
+        row.bind("<Leave>", _leave)
+        cb.bind("<Enter>", _enter)
+        cb.bind("<Leave>", _leave)
+        rows_by_name[name] = row
+
+    def _apply_search(*_args) -> None:
+        query = (search_var.get() or "").strip().lower()
+        for name in page_names:
+            row = rows_by_name[name]
+            row.pack_forget()
+            if (not query) or (query in name.lower()):
+                row.pack(fill=tk.X, anchor=tk.W)
+        canvas.update_idletasks()
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    search_var.trace_add("write", _apply_search)
+
+    def _select_all() -> None:
+        for v in vars_by_name.values():
+            v.set(True)
+
+    def _clear_all() -> None:
+        for v in vars_by_name.values():
+            v.set(False)
+
+    ttk.Button(tool, text="ເລືອກທັງໝົດ", style="PagePick.TButton", command=_select_all).pack(
+        side=tk.LEFT
+    )
+    ttk.Button(
+        tool, text="ເອົາອອກທັງໝົດ", style="PagePick.TButton", command=_clear_all
+    ).pack(side=tk.LEFT, padx=(8, 0))
+
+    btn_row = ttk.Frame(outer, style="PagePick.TFrame")
+    btn_row.pack(fill=tk.X, padx=12, pady=(8, 12))
+
+    def _cancel() -> None:
+        try:
+            canvas.unbind_all("<MouseWheel>")
+        except Exception:
+            pass
+        result["value"] = None
+        win.destroy()
+
+    def _start() -> None:
+        selected = [n for n, v in vars_by_name.items() if v.get()]
+        if not selected:
+            messagebox.showwarning(
+                "ແຈ້ງ",
+                "ເລືອກຢ່າງໜ້ອຍ 1 ເພຈ ຫຼື ກົດເລືອກທັງໝົດ",
+                parent=win,
+            )
+            return
+        try:
+            canvas.unbind_all("<MouseWheel>")
+        except Exception:
+            pass
+        if len(selected) == len(page_names):
+            result["value"] = []
+        else:
+            result["value"] = selected
+        win.destroy()
+
+    ttk.Button(btn_row, text="ເລີ່ມສົ່ງ", style="PagePick.TButton", command=_start).pack(
+        side=tk.RIGHT
+    )
+    ttk.Button(btn_row, text="ຍົກເລີກ", style="PagePick.TButton", command=_cancel).pack(
+        side=tk.RIGHT, padx=(0, 8)
+    )
+
+    win.protocol("WM_DELETE_WINDOW", _cancel)
+    win.grab_set()
+    search_entry.focus_set()
+    win.wait_window()
+    return result["value"]
 
 
 def _facebook_user_data_dir() -> Path:
@@ -586,10 +840,24 @@ def capture_all_worker(commands, cwd: Path, env: dict, out_queue: queue.Queue):
 
 
 def pipeline_worker(steps, env: dict, out_queue: queue.Queue, source: str = "pipeline"):
-    """Run titled commands in order and stream logs. Continue after a step fails."""
+    """Run titled commands in order and stream logs. Continue after a step fails.
+
+    After a successful Token step with RESIDUALS=0, skip the next Playwright step.
+    """
     creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    skip_next_playwright = False
     try:
         for title, cmd, cwd in steps:
+            if skip_next_playwright and str(title).startswith("Playwright"):
+                out_queue.put(
+                    (
+                        source,
+                        "⏭️ ข้าม Playwright — Token ไม่มีรายการค้าง (RESIDUALS=0)\n",
+                    )
+                )
+                skip_next_playwright = False
+                continue
+            skip_next_playwright = False
             out_queue.put((source, f"\n=== {title} ===\n"))
             proc = subprocess.Popen(
                 cmd,
@@ -600,13 +868,21 @@ def pipeline_worker(steps, env: dict, out_queue: queue.Queue, source: str = "pip
                 env=env,
                 creationflags=creation_flags,
             )
+            step_text = ""
             for line in proc.stdout:
-                out_queue.put((source, line.decode("utf-8", errors="replace")))
+                decoded = line.decode("utf-8", errors="replace")
+                step_text += decoded
+                out_queue.put((source, decoded))
             proc.wait()
             if proc.returncode != 0:
                 out_queue.put(
                     (source, f"❌ {title} ไม่สำเร็จ (exit {proc.returncode})\n")
                 )
+            elif str(title).startswith("Token"):
+                for raw_line in step_text.splitlines():
+                    if raw_line.strip() == "RESIDUALS=0":
+                        skip_next_playwright = True
+                        break
     except Exception as e:
         out_queue.put((source, f"❌ Pipeline error: {e}\n"))
     out_queue.put((source, None))
@@ -1021,17 +1297,30 @@ def main():
         if not SEND_BILL_API_SCRIPT.is_file() or not NO_API_SCRIPT.is_file():
             messagebox.showerror("ຜິດພາດ", "ບໍ່ພົບສະຄຣິບແຈ້ງ")
             return
+
+        pages_args: List[str] = []
+        if kind == "stock_available":
+            chosen = _prompt_stock_available_pages(root)
+            if chosen is None:
+                return
+            if chosen:
+                pages_csv = ",".join(chosen)
+                pages_args = ["--pages", pages_csv]
+                append_status(f"ກອງເພຈ: {pages_csv}\n")
+            else:
+                append_status("ສົ່ງທັງໝົດເພຈ\n")
+
         api_py = _get_python_for_api()
         pw_py = _get_python_for_no_api()
         steps = [
             (
                 f"Token {title}",
-                [api_py, "-u", str(SEND_BILL_API_SCRIPT), "--sheet", token_flag],
+                [api_py, "-u", str(SEND_BILL_API_SCRIPT), "--sheet", token_flag] + pages_args,
                 PROJECT_ROOT,
             ),
             (
                 f"Playwright {title}",
-                [pw_py, "-u", str(NO_API_SCRIPT), "--sheet", pw_flag] + _no_api_user_data_args(),
+                [pw_py, "-u", str(NO_API_SCRIPT), "--sheet", pw_flag] + pages_args + _no_api_user_data_args(),
                 NO_API_SEND_BILL_DIR,
             ),
         ]

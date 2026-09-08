@@ -47,6 +47,100 @@ PAGE_REPLY_TEXT_KEYS = (
     "order_reply",
 )
 
+_KEYWORD_SPLIT_RE = re.compile(r"[,;\n]+")
+
+PAGE_MEDIA_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+PAGE_MEDIA_VIDEO_EXT = {".mp4", ".mov", ".m4v", ".webm"}
+PAGE_MEDIA_ALL_EXT = PAGE_MEDIA_IMAGE_EXT | PAGE_MEDIA_VIDEO_EXT
+PAGE_MEDIA_KINDS = ("welcome", "promo", "price", "keyword")
+PAGE_MEDIA_FOLDERS = {
+    "welcome": "product_images",
+    "promo": "promo_images",
+    "price": "price_images",
+    "keyword": "keyword_images",
+}
+
+
+def parse_keyword_list(text: str) -> List[str]:
+    """Split comma/newline/semicolon-separated keywords; strip and drop empties."""
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    seen: set = set()
+    out: List[str] = []
+    for part in _KEYWORD_SPLIT_RE.split(raw):
+        kw = part.strip()
+        if kw and kw not in seen:
+            seen.add(kw)
+            out.append(kw)
+    return out
+
+
+def normalize_keyword_media(raw: Any) -> List[str]:
+    """Validate media filename list for keyword rules."""
+    if not isinstance(raw, list):
+        return []
+    out: List[str] = []
+    seen: set = set()
+    for item in raw:
+        name = Path(str(item or "").strip()).name
+        if not name or name in (".", "..") or name in seen:
+            continue
+        ext = Path(name).suffix.lower()
+        if ext not in PAGE_MEDIA_ALL_EXT:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+def normalize_keyword_replies(raw: Any) -> List[Dict[str, Any]]:
+    """Validate keyword_replies from JSON or UI into [{keywords, reply, media}, ...]."""
+    if not isinstance(raw, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        reply = str(item.get("reply") or "").strip()
+        media = normalize_keyword_media(item.get("media"))
+        kws_raw = item.get("keywords")
+        if isinstance(kws_raw, str):
+            keywords = parse_keyword_list(kws_raw)
+        elif isinstance(kws_raw, list):
+            keywords = []
+            seen: set = set()
+            for k in kws_raw:
+                kw = str(k or "").strip()
+                if kw and kw not in seen:
+                    seen.add(kw)
+                    keywords.append(kw)
+        else:
+            continue
+        if not keywords:
+            continue
+        if not reply and not media:
+            continue
+        entry: Dict[str, Any] = {"keywords": keywords, "reply": reply}
+        if media:
+            entry["media"] = media
+        out.append(entry)
+    return out
+
+
+def collect_keyword_media_refs(rules: Any) -> set:
+    """All pool filenames referenced by keyword rules."""
+    refs: set = set()
+    for rule in normalize_keyword_replies(rules):
+        for name in rule.get("media") or []:
+            refs.add(name)
+    return refs
+
+
+def format_keyword_list(keywords: List[str]) -> str:
+    """Join keywords for display in UI (one per line)."""
+    return "\n".join(str(k).strip() for k in keywords if str(k).strip())
+
 DEFAULT_NOTIFY_MESSAGES = {
     "delivered": "ຮອດແລ້ວເດີໄປຮັບເຄື່ອງແດ່ເຈົ້າ",
     "stock_out": "ເຄື່ອງເມິດແລ້ວເດີ ສາມາດຍົກເລີກ ຫຼື ຖ້າອີກ 1 ທິດເຄື່ອງມາຮອດເຮົາ ຫຼຸດລາຄາໃຫ້",
@@ -57,16 +151,6 @@ NOTIFY_MESSAGE_FILE_KEYS = {
     "delivered": "notify_delivered_message",
     "stock_out": "notify_stock_out_message",
     "stock_available": "notify_stock_available_message",
-}
-
-PAGE_MEDIA_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
-PAGE_MEDIA_VIDEO_EXT = {".mp4", ".mov", ".m4v", ".webm"}
-PAGE_MEDIA_ALL_EXT = PAGE_MEDIA_IMAGE_EXT | PAGE_MEDIA_VIDEO_EXT
-PAGE_MEDIA_KINDS = ("welcome", "promo", "price")
-PAGE_MEDIA_FOLDERS = {
-    "welcome": "product_images",
-    "promo": "promo_images",
-    "price": "price_images",
 }
 
 META_MAP_KEYS = (
@@ -564,6 +648,7 @@ class ConfigIO:
         globals_in: Dict[str, Any],
         page_name: Optional[str] = None,
         page_fields: Optional[Dict[str, str]] = None,
+        keyword_replies: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """Merge global flags and optionally one page's text fields. Keep other pages."""
         self.ensure_seeded()
@@ -595,6 +680,8 @@ class ConfigIO:
             for key in PAGE_REPLY_TEXT_KEYS:
                 if key in page_fields:
                     merged[key] = str(page_fields.get(key) or "")
+            if keyword_replies is not None:
+                merged["keyword_replies"] = normalize_keyword_replies(keyword_replies)
             out[name] = merged
 
         # Keep placeholder only if no real page keys besides top-level
@@ -709,6 +796,115 @@ class ConfigIO:
                 path.unlink()
                 deleted += 1
         return deleted
+
+    def _next_keyword_pool_index(self, folder: Path) -> int:
+        highest = 0
+        if folder.is_dir():
+            for p in folder.iterdir():
+                if not p.is_file():
+                    continue
+                m = re.match(r"^k_(\d+)", p.stem, re.IGNORECASE)
+                if m:
+                    highest = max(highest, int(m.group(1)))
+        return highest + 1
+
+    def add_keyword_pool_media(
+        self, page_name: str, source_paths: List[Path]
+    ) -> List[str]:
+        """Copy sources into keyword_images/<page>/ as k_NN.ext. Return dest names."""
+        folder = self.page_media_dir("keyword", page_name)
+        folder.mkdir(parents=True, exist_ok=True)
+        added: List[str] = []
+        idx = self._next_keyword_pool_index(folder)
+        for src in source_paths:
+            src = Path(src)
+            if not src.is_file():
+                continue
+            ext = src.suffix.lower()
+            if ext not in PAGE_MEDIA_ALL_EXT:
+                continue
+            dest_name = f"k_{idx:02d}{ext}"
+            dest = folder / dest_name
+            while dest.exists():
+                idx += 1
+                dest_name = f"k_{idx:02d}{ext}"
+                dest = folder / dest_name
+            shutil.copy2(src, dest)
+            added.append(dest_name)
+            idx += 1
+        if not added:
+            raise ValueError("ไม่มีไฟล์รูป/วิดีโอที่รองรับ")
+        return added
+
+    def delete_keyword_pool_media(self, page_name: str, filenames: List[str]) -> int:
+        return self.delete_page_media("keyword", page_name, filenames)
+
+    def list_keyword_media_by_names(
+        self, page_name: str, names: List[str]
+    ) -> List[Dict[str, str]]:
+        """Return media rows for explicit pool filenames in list order."""
+        folder = self.page_media_dir("keyword", page_name)
+        rows: List[Dict[str, str]] = []
+        for raw in names:
+            name = Path(str(raw or "").strip()).name
+            if not name or name in (".", ".."):
+                continue
+            path = folder / name
+            if not path.is_file():
+                continue
+            ext = path.suffix.lower()
+            if ext in PAGE_MEDIA_IMAGE_EXT:
+                mkind = "image"
+            elif ext in PAGE_MEDIA_VIDEO_EXT:
+                mkind = "video"
+            else:
+                continue
+            rows.append({"name": name, "kind": mkind, "path": str(path)})
+        return rows
+
+    def resolve_keyword_media_paths(
+        self, page_name: str, names: List[str]
+    ) -> List[Path]:
+        """Map pool filenames to existing paths (skip missing / unsafe names)."""
+        folder = self.page_media_dir("keyword", page_name)
+        try:
+            folder_resolved = folder.resolve()
+        except OSError:
+            return []
+        out: List[Path] = []
+        for raw in names:
+            name = Path(str(raw or "").strip()).name
+            if not name or name in (".", ".."):
+                continue
+            path = folder / name
+            try:
+                resolved = path.resolve()
+            except OSError:
+                continue
+            if resolved.parent != folder_resolved or not path.is_file():
+                continue
+            if path.suffix.lower() not in PAGE_MEDIA_ALL_EXT:
+                continue
+            out.append(path)
+        return out
+
+    def gc_unused_keyword_media(
+        self, page_name: str, referenced_names: set
+    ) -> int:
+        """Delete keyword pool files not referenced by any rule."""
+        folder = self.page_media_dir("keyword", page_name)
+        if not folder.is_dir():
+            return 0
+        safe_refs = {Path(str(n)).name for n in referenced_names if str(n).strip()}
+        to_delete: List[str] = []
+        for p in folder.iterdir():
+            if not p.is_file():
+                continue
+            if p.suffix.lower() not in PAGE_MEDIA_ALL_EXT:
+                continue
+            if p.name not in safe_refs:
+                to_delete.append(p.name)
+        return self.delete_keyword_pool_media(page_name, to_delete)
 
     def reorder_page_media(
         self, kind: str, page_name: str, ordered_names: List[str]

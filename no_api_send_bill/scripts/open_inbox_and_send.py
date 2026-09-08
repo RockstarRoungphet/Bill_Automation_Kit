@@ -2177,12 +2177,28 @@ def _wa_clear_search_box(page: Page) -> None:
 
 
 def _wa_paste_search_query(page: Page, box, query: str) -> dict:
-    """ใส่คำค้นในช่องค้นหาแบบ paste (Ctrl+V) — วิธีเดียวกับผู้ใช้วาง Order แล้วพบผล.
+    """ใส่คำค้นในช่องค้นหาแบบกระตุ้น React ของ WA (insertFromPaste).
 
-    fill()/type() หลายรอบทำให้ WA ไม่อัปเดตผลค้นหา (ขึ้น 'ไม่พบ…') ทั้งที่วางมือเจอ.
+    ห้าม Backspace กลางทาง — ทำให้ WA ค้าง empty-state ทั้งที่ช่องมีค่า
+    ใช้ native input setter + InputEvent; Ctrl+V / fill เป็นแผนสำรองเท่านั้น
     """
     q = (query or "").strip()
     method = "none"
+
+    def _read_typed() -> tuple[str, int]:
+        try:
+            tag = (box.evaluate("el => (el.tagName || '').toLowerCase()") or "")
+            if tag == "input":
+                typed = (box.evaluate("el => el.value || ''") or "").strip()
+            else:
+                typed = (box.evaluate("el => (el.innerText || el.textContent || '')") or "").strip()
+            return typed, len(typed)
+        except Exception:
+            return "", -1
+
+    def _value_matches(typed: str) -> bool:
+        return typed == q or (bool(q) and q in typed)
+
     try:
         # clipboard text (permission เปิดจาก context แล้ว)
         page.evaluate(
@@ -2191,7 +2207,6 @@ def _wa_paste_search_query(page: Page, box, query: str) -> dict:
                 await navigator.clipboard.writeText(text);
                 return true;
               } catch (e) {
-                // fallback: execCommand copy จาก textarea ชั่วคราว
                 const ta = document.createElement('textarea');
                 ta.value = text;
                 ta.style.position = 'fixed';
@@ -2213,49 +2228,120 @@ def _wa_paste_search_query(page: Page, box, query: str) -> dict:
         except Exception:
             box.click(timeout=2000, force=True)
         _human_delay(60, 120)
+
+        # 1) ClipboardEvent('paste') — select-all แล้ววางทับ โดยไม่ Backspace
+        paste_js = page.evaluate(
+            """(text) => {
+              const el = document.activeElement;
+              if (!el) return { ok: false, via: 'no_active' };
+              try {
+                if (typeof el.select === 'function') el.select();
+                else if (el.setSelectionRange && typeof el.value === 'string') {
+                  el.setSelectionRange(0, el.value.length);
+                }
+              } catch (e) {}
+              try {
+                const dt = new DataTransfer();
+                dt.setData('text/plain', text);
+                const evt = new ClipboardEvent('paste', {
+                  bubbles: true,
+                  cancelable: true,
+                  clipboardData: dt,
+                });
+                const cancelled = !el.dispatchEvent(evt);
+                const cur = (el.value != null ? el.value : (el.innerText || el.textContent || '')).trim();
+                return { ok: cur === text || (text && cur.includes(text)), via: 'clipboard_event', cancelled, curLen: cur.length };
+              } catch (e) {
+                return { ok: false, via: 'clipboard_event_err', err: String(e).slice(0, 80) };
+              }
+            }""",
+            q,
+        )
+        typed, typed_len = _read_typed()
+        if _value_matches(typed):
+            method = "clipboard_event"
+            _human_delay(400, 700)
+            return {"ok": True, "method": method, "typedLen": typed_len, "expectedLen": len(q), "pasteJs": paste_js}
+
+        # 2) native HTMLInputElement value setter + insertFromPaste InputEvent + change
+        native_js = page.evaluate(
+            """(text) => {
+              const el = document.activeElement;
+              if (!el) return { ok: false, via: 'no_active' };
+              try {
+                const proto = el.tagName === 'INPUT'
+                  ? window.HTMLInputElement.prototype
+                  : (el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : null);
+                if (proto) {
+                  const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                  if (desc && desc.set) desc.set.call(el, text);
+                  else el.value = text;
+                } else if (el.isContentEditable) {
+                  el.focus();
+                  const sel = window.getSelection();
+                  if (sel) {
+                    sel.selectAllChildren(el);
+                    sel.deleteFromDocument();
+                  }
+                  el.textContent = text;
+                } else {
+                  el.textContent = text;
+                }
+                el.dispatchEvent(new InputEvent('input', {
+                  bubbles: true,
+                  cancelable: true,
+                  inputType: 'insertFromPaste',
+                  data: text,
+                }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                const cur = (el.value != null ? el.value : (el.innerText || el.textContent || '')).trim();
+                return { ok: cur === text || (text && cur.includes(text)), via: 'native_setter', curLen: cur.length };
+              } catch (e) {
+                return { ok: false, via: 'native_setter_err', err: String(e).slice(0, 80) };
+              }
+            }""",
+            q,
+        )
+        typed, typed_len = _read_typed()
+        if _value_matches(typed):
+            method = "native_insertFromPaste"
+            _human_delay(400, 700)
+            return {"ok": True, "method": method, "typedLen": typed_len, "expectedLen": len(q), "nativeJs": native_js}
+
+        # 3) Ctrl+A + Ctrl+V — ยังไม่ Backspace
         page.keyboard.press("Control+a")
         _human_delay(30, 60)
-        page.keyboard.press("Backspace")
-        _human_delay(40, 80)
         page.keyboard.press("Control+v")
         method = "ctrl_v"
         _human_delay(400, 700)
+        typed, typed_len = _read_typed()
+        if _value_matches(typed):
+            return {"ok": True, "method": method, "typedLen": typed_len, "expectedLen": len(q)}
     except Exception as e:
-        # fallback สุดท้าย
-        try:
-            tag = (box.evaluate("el => (el.tagName || '').toLowerCase()") or "")
-            if tag == "input":
-                box.fill(q)
-                method = "fill_fallback"
-            else:
-                page.keyboard.insert_text(q)
-                method = "insert_fallback"
-        except Exception as e2:
-            return {"ok": False, "method": method, "error": f"{str(e)[:60]}|{str(e2)[:40]}"}
+        method = f"err:{str(e)[:40]}"
 
-    typed = ""
-    typed_len = -1
+    # 4) fill() last resort (มักไม่กระตุ้น search)
     try:
         tag = (box.evaluate("el => (el.tagName || '').toLowerCase()") or "")
         if tag == "input":
-            typed = (box.evaluate("el => el.value || ''") or "").strip()
+            box.fill(q)
+            method = f"{method}+fill" if method != "none" else "fill_fallback"
         else:
-            typed = (box.evaluate("el => (el.innerText || el.textContent || '')") or "").strip()
-        typed_len = len(typed)
-    except Exception:
-        pass
-    # ถ้า paste ไม่ติดค่า — ลอง fill ตรง
-    if typed_len != len(q):
-        try:
-            tag = (box.evaluate("el => (el.tagName || '').toLowerCase()") or "")
-            if tag == "input":
-                box.fill(q)
-                method = f"{method}+fill"
-                typed = (box.evaluate("el => el.value || ''") or "").strip()
-                typed_len = len(typed)
-        except Exception:
-            pass
-    return {"ok": typed_len == len(q) or (q and q in typed), "method": method, "typedLen": typed_len, "expectedLen": len(q)}
+            page.keyboard.insert_text(q)
+            method = f"{method}+insert" if method != "none" else "insert_fallback"
+        _human_delay(200, 400)
+    except Exception as e2:
+        typed, typed_len = _read_typed()
+        return {
+            "ok": _value_matches(typed),
+            "method": method,
+            "typedLen": typed_len,
+            "expectedLen": len(q),
+            "error": str(e2)[:60],
+        }
+
+    typed, typed_len = _read_typed()
+    return {"ok": _value_matches(typed), "method": method, "typedLen": typed_len, "expectedLen": len(q)}
 
 
 def _wa_search_open_chat_by_order_id(page: Page, order_id: str, max_wait: float = 6.0) -> Tuple[bool, str]:
@@ -2324,6 +2410,7 @@ def _wa_search_open_chat_by_order_id(page: Page, order_id: str, max_wait: float 
         q_wait = max_wait if qi == 0 else min(max_wait, 4.0)
         best_pick = None
         rejected_partial = 0
+        repasted_on_empty = False
         while time.time() - t0 < q_wait:
             _wa_dismiss_blocking_dialogs(page)
             rows = _wa_scan_search_result_rows(page)
@@ -2352,6 +2439,33 @@ def _wa_search_open_chat_by_order_id(page: Page, order_id: str, max_wait: float 
                 best_score = exact[0][0]
                 query_used = query
                 break
+
+            # ถ้า WA ค้าง empty-state ทั้งที่ช่องมีค่า — paste ซ้ำ 1 ครั้งหลัง ~1.2s
+            if (
+                not repasted_on_empty
+                and not rows
+                and (time.time() - t0) >= 1.2
+            ):
+                try:
+                    empty_state = bool(
+                        page.evaluate(
+                            """() => {
+                              const side = document.querySelector('#side') || document.body;
+                              const body = (side.innerText || '').slice(0, 1500);
+                              return /ไม่พบแชท|No chats|ไม่พบผล|รายชื่อติดต่อ หรือข้อความ/i.test(body);
+                            }"""
+                        )
+                    )
+                except Exception:
+                    empty_state = False
+                if empty_state:
+                    box = _wa_get_search_box(page) or box
+                    try:
+                        _wa_paste_search_query(page, box, query)
+                    except Exception:
+                        pass
+                    repasted_on_empty = True
+
             time.sleep(0.25)
 
         if best_pick:
@@ -4702,6 +4816,7 @@ def send_bill_from_sheet(
     notify_delivered: bool = False,
     notify_stock_out: bool = False,
     notify_stock_available: bool = False,
+    page_filter: Optional[List[str]] = None,
 ) -> None:
     """ส่งบิลจาก Google Sheet โดยตรง (ต้องแชร์ Sheet ให้ Service Account แล้ว)
     ถ้า notify_delivered=True กรองคอลัมน์ A = 🏁ຮອດປາຍທາງແລ້ວ ຫຼື 💬ແຈ້ງຮອດແລ້ວ ส่งข้อความแจ้งถึง แล้วบันทึก Column V
@@ -4736,6 +4851,8 @@ def send_bill_from_sheet(
         required_status = NOTIFY_STOCK_AVAILABLE_STATUSES
         notify_result_value = NOTIFY_STOCK_AVAILABLE_RESULT
     if sheet_names:
+        sheet_read_ok = False
+        sheet_read_failed = False
         for name in sheet_names:
             part = read_rows_from_google_sheet(
                 sheet_id,
@@ -4746,11 +4863,17 @@ def send_bill_from_sheet(
                 customer_name_map=customer_name_map,
                 phone_map=phone_map,
             )
+            if part is None:
+                sheet_read_failed = True
+                continue
+            sheet_read_ok = True
             if part:
                 print(f"   📄 ชีต '{name}': พบ {len(part)} รายการ")
             rows.extend(part)
     else:
-        rows = read_rows_from_google_sheet(
+        sheet_read_ok = False
+        sheet_read_failed = False
+        rows_or_none = read_rows_from_google_sheet(
             sheet_id,
             sheet_name=sheet_name or "Sheet1",
             credentials_path=credentials_path,
@@ -4759,8 +4882,31 @@ def send_bill_from_sheet(
             customer_name_map=customer_name_map,
             phone_map=phone_map,
         )
+        if rows_or_none is None:
+            sheet_read_failed = True
+            rows = []
+        else:
+            sheet_read_ok = True
+            rows = rows_or_none
+
+    if page_filter and rows:
+        allow = {p.lower().strip() for p in page_filter if str(p).strip()}
+        display = [p for p in page_filter if str(p).strip()]
+        before = len(rows)
+        rows = [r for r in rows if (r[1] or "").lower().strip() in allow]
+        print(f"🔍 กรองเฉพาะเพจ: {', '.join(display)} ({before} → {len(rows)} รายการ)")
+
     if not rows:
-        print("❌ ไม่พบข้อมูลใน Google Sheet (ตรวจสอบ Sheet ID การแชร์ให้ Service Account และชื่อชีต)")
+        if sheet_read_ok and not sheet_read_failed:
+            if page_filter and notify_mode:
+                print("❌ ไม่พบแถวที่ต้องแจ้งสำหรับเพจที่เลือก")
+                print("RESIDUALS=0")
+            elif notify_mode:
+                print("ℹ️ ไม่มีรายการค้างแจ้ง (สถานะคอลัมน์ A ไม่ตรงโหมดแจ้ง)")
+            else:
+                print("ℹ️ ไม่มีรายการค้างส่ง (ລໍສົ່ງບິນ / Column R ว่าง)")
+        else:
+            print("❌ ไม่พบข้อมูลใน Google Sheet (ตรวจสอบ Sheet ID การแชร์ให้ Service Account และชื่อชีต)")
         return
     if phone_map:
         print(f"📱 พบ {len(phone_map)} รายการ WhatsApp")
@@ -4816,6 +4962,21 @@ def main():
     if notify_modes_count > 1:
         print("❌ เลือกได้เพียงโหมดแจ้งเดียว: --notify-delivered หรือ --notify-stock-out หรือ --notify-stock-available")
         sys.exit(1)
+
+    page_filter: Optional[List[str]] = None
+    if "--pages" in args:
+        pi = args.index("--pages")
+        if pi + 1 >= len(args) or str(args[pi + 1]).startswith("--"):
+            print("❌ ต้องระบุรายชื่อเพจหลัง --pages เช่น --pages \"เพจ1,เพจ2\"")
+            sys.exit(1)
+        page_filter = [
+            p.strip() for p in str(args[pi + 1]).split(",") if p.strip()
+        ]
+        if not page_filter:
+            print("❌ --pages ว่าง — ระบุอย่างน้อย 1 เพจ หรือไม่ใช้ flag นี้เพื่อส่งทั้งหมด")
+            sys.exit(1)
+        args = [a for j, a in enumerate(args) if j not in (pi, pi + 1)]
+
     carrier_cli = ""
     if "--carrier" in args:
         ci = args.index("--carrier")
@@ -4907,6 +5068,7 @@ def main():
             notify_delivered=notify_delivered,
             notify_stock_out=notify_stock_out,
             notify_stock_available=notify_stock_available,
+            page_filter=page_filter,
         )
     elif len(args) >= 3:
         order_id, page_name, tracking_id = args[0], args[1], args[2]
@@ -4925,6 +5087,7 @@ def main():
         print("  --notify-delivered: โหมดແຈ້ງຮອດແລ້ວ (คอลัมน์ A = 🏁ຮອດປາຍທາງແລ້ວ ຫຼື 💬ແຈ້ງຮອດແລ້ວ — ส่งข้อความแจ้งถึง บันทึก Column V)")
         print("  --notify-stock-out: โหมดແຈ້ງສິນຄ້າໝົດ (คอลัมน์ A = 🗑️ໝົດ หรือ ⏳ລໍສິນຄ້າ — ส่งข้อความแจ้งสินค้าหมด บันทึก Column V)")
         print("  --notify-stock-available: โหมดແຈ້ງມີສິນຄ້າ (คอลัมน์ A = 📢ແຈ້ງສິນຄ້າໝົດແລ້ວ — ส่งข้อความแจ้งมีสินค้า บันทึก Column V)")
+        print("  --pages \"เพจ1,เพจ2\": กรองส่งเฉพาะเพจที่ระบุ (โหมดแจ้ง / --sheet)")
         print("  --user-data-dir: โฟลเดอร์เก็บ browser profile (ค่าเริ่มต้น: browser_profile/)")
         sys.exit(1)
 

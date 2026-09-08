@@ -69,6 +69,37 @@ def discover_page_media_ordered(base_dir: str, page_name: str) -> List[str]:
     return paths
 
 
+def resolve_named_media_paths(
+    base_dir: str, page_name: str, filenames: Iterable[str]
+) -> List[str]:
+    """Return existing media paths for explicit filenames under base_dir/page_name/."""
+    base_dir = os.path.normpath(base_dir)
+    if not page_name or not os.path.isdir(base_dir):
+        return []
+    sub = os.path.join(base_dir, page_name)
+    if not os.path.isdir(sub):
+        return []
+    try:
+        sub_real = os.path.realpath(sub)
+    except OSError:
+        return []
+    paths: List[str] = []
+    for raw in filenames:
+        name = os.path.basename(str(raw or "").strip())
+        if not name or name in (".", ".."):
+            continue
+        path = os.path.join(sub, name)
+        try:
+            resolved = os.path.realpath(path)
+        except OSError:
+            continue
+        if os.path.dirname(resolved) != sub_real:
+            continue
+        if os.path.isfile(resolved) and media_type_for_path(resolved):
+            paths.append(resolved)
+    return paths
+
+
 def discover_page_media(base_dir: str, page_name: str) -> Tuple[List[str], List[str]]:
     """
     Return (image_paths, video_paths) from base_dir/page_name/ only.

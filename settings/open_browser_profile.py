@@ -8,6 +8,7 @@ from pathlib import Path
 
 FACEBOOK_INBOX_URL = "https://business.facebook.com/latest/inbox/all/"
 HAL_LOGIN_URL = "https://www.halexpress.la/login"
+WHATSAPP_WEB_URL = "https://web.whatsapp.com/"
 
 
 def _alive_pages(context) -> bool:

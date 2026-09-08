@@ -53,6 +53,8 @@ promo_images/*
 !promo_images/README.md
 price_images/*
 !price_images/.gitkeep
+keyword_images/*
+!keyword_images/.gitkeep
 
 # Local tools
 cloudflared

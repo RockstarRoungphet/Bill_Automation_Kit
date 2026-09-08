@@ -7,6 +7,15 @@
   "YourPageName": {
     "welcome_text": "Welcome text for your page (Lao/Thai)...",
     "price_reply": "Price reply text...",
-    "promo_text": "Promo text (optional)..."
+    "promo_text": "Promo text (optional)...",
+    "cod_reply": "COD reply text (optional)...",
+    "order_reply": "Order reply text (optional)...",
+    "keyword_replies": [
+      {
+        "keywords": ["เก็บปลายทาง", "cod", "ປາຍທາງ"],
+        "reply": "เก็บปลายทางได้ค่ะ",
+        "media": ["k_01.jpg"]
+      }
+    ]
   }
 }
