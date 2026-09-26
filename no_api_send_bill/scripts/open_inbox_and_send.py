@@ -395,6 +395,60 @@ STEALTH_CHROME_ARGS = [
 ]
 
 
+def _chrome_launch_args() -> list:
+    """STEALTH args plus optional BAK_WINDOW_POSITION=x,y from the Launcher."""
+    args = list(STEALTH_CHROME_ARGS)
+    args.append("--window-size=1600,1000")
+    raw = (os.environ.get("BAK_WINDOW_POSITION") or "").strip()
+    if raw and "," in raw:
+        try:
+            xs, ys = raw.split(",", 1)
+            x, y = int(xs.strip()), int(ys.strip())
+            args.append(f"--window-position={x},{y}")
+        except ValueError:
+            pass
+    return args
+
+
+def _bak_window_position() -> Optional[Tuple[int, int]]:
+    raw = (os.environ.get("BAK_WINDOW_POSITION") or "").strip()
+    if not raw or "," not in raw:
+        return None
+    try:
+        xs, ys = raw.split(",", 1)
+        return int(xs.strip()), int(ys.strip())
+    except ValueError:
+        return None
+
+
+def _apply_bak_window_position(page, width: int = 1600, height: int = 1000) -> None:
+    """CDP move so persistent Chrome profile cannot keep an old screen corner."""
+    pos = _bak_window_position()
+    if pos is None:
+        return
+    try:
+        session = page.context.new_cdp_session(page)
+        info = session.send("Browser.getWindowForTarget")
+        window_id = info.get("windowId")
+        if window_id is None:
+            return
+        session.send(
+            "Browser.setWindowBounds",
+            {
+                "windowId": window_id,
+                "bounds": {
+                    "left": int(pos[0]),
+                    "top": int(pos[1]),
+                    "width": int(width),
+                    "height": int(height),
+                    "windowState": "normal",
+                },
+            },
+        )
+    except Exception:
+        pass
+
+
 def _human_delay(min_ms: int = 200, max_ms: int = 800) -> float:
     """สุ่ม delay เล็กน้อยเพื่อเลียนแบบคนจริง (คืนค่าเป็นวินาที)"""
     ms = random.randint(min_ms, max_ms)
@@ -4183,7 +4237,7 @@ def send_bill_single(
                 headless=False,
                 viewport={"width": 1600, "height": 1000},
                 permissions=["clipboard-read", "clipboard-write"],
-                args=STEALTH_CHROME_ARGS,
+                args=_chrome_launch_args(),
                 ignore_default_args=["--enable-automation", "--enable-blink-features=IdleDetection"],
                 locale="th-TH",
                 timezone_id="Asia/Bangkok",
@@ -4192,11 +4246,12 @@ def send_bill_single(
             context.add_init_script(STEALTH_INIT_SCRIPT)
             page = context.pages[0] if context.pages else context.new_page()
             page.set_viewport_size({"width": 1600, "height": 1000})
+            _apply_bak_window_position(page)
         else:
             browser = p.chromium.launch(
                 channel="chrome",
                 headless=False,
-                args=STEALTH_CHROME_ARGS,
+                args=_chrome_launch_args(),
                 ignore_default_args=["--enable-automation", "--enable-blink-features=IdleDetection"],
             )
             context = browser.new_context(
@@ -4208,6 +4263,7 @@ def send_bill_single(
             context.add_init_script(STEALTH_INIT_SCRIPT)
             page = context.new_page()
             page.set_viewport_size({"width": 1600, "height": 1000})
+            _apply_bak_window_position(page)
         print(f"   ⏱️ เปิดเบราว์เซอร์: {_fmt_elapsed(time.time() - t_browser)}")
         
         try:
@@ -4425,7 +4481,7 @@ def send_bill_from_rows(
                 headless=False,
                 viewport={"width": 1600, "height": 1000},
                 permissions=["clipboard-read", "clipboard-write"],
-                args=STEALTH_CHROME_ARGS,
+                args=_chrome_launch_args(),
                 ignore_default_args=["--enable-automation", "--enable-blink-features=IdleDetection"],
                 locale="th-TH",
                 timezone_id="Asia/Bangkok",
@@ -4434,11 +4490,12 @@ def send_bill_from_rows(
             context.add_init_script(STEALTH_INIT_SCRIPT)
             page = context.pages[0] if context.pages else context.new_page()
             page.set_viewport_size({"width": 1600, "height": 1000})
+            _apply_bak_window_position(page)
         else:
             browser = p.chromium.launch(
                 channel="chrome",
                 headless=False,
-                args=STEALTH_CHROME_ARGS,
+                args=_chrome_launch_args(),
                 ignore_default_args=["--enable-automation", "--enable-blink-features=IdleDetection"],
             )
             context = browser.new_context(
@@ -4450,6 +4507,7 @@ def send_bill_from_rows(
             context.add_init_script(STEALTH_INIT_SCRIPT)
             page = context.new_page()
             page.set_viewport_size({"width": 1600, "height": 1000})
+            _apply_bak_window_position(page)
         browser_time = time.time() - t_browser
         print(f"   ⏱️ เปิดเบราว์เซอร์: {_fmt_elapsed(browser_time)}")
 
@@ -4817,6 +4875,7 @@ def send_bill_from_sheet(
     notify_stock_out: bool = False,
     notify_stock_available: bool = False,
     page_filter: Optional[List[str]] = None,
+    delivered_filter: Optional[str] = None,
 ) -> None:
     """ส่งบิลจาก Google Sheet โดยตรง (ต้องแชร์ Sheet ให้ Service Account แล้ว)
     ถ้า notify_delivered=True กรองคอลัมน์ A = 🏁ຮອດປາຍທາງແລ້ວ ຫຼື 💬ແຈ້ງຮອດແລ້ວ ส่งข้อความแจ้งถึง แล้วบันทึก Column V
@@ -4827,6 +4886,8 @@ def send_bill_from_sheet(
         read_rows_from_google_sheet,
         batch_update_send_dates,
         batch_update_notified_delivered,
+        REQUIRED_STATUS_DELIVERED,
+        REQUIRED_STATUS_DELIVERED_FOLLOWUP,
         NOTIFY_DELIVERED_STATUSES,
         NOTIFY_STOCK_OUT_STATUSES,
         NOTIFY_STOCK_AVAILABLE_STATUSES,
@@ -4840,7 +4901,14 @@ def send_bill_from_sheet(
     notify_result_value = "💬ແຈ້ງຮອດແລ້ວ"
     if notify_delivered:
         notify_mode = "delivered"
-        required_status = NOTIFY_DELIVERED_STATUSES
+        if delivered_filter == "first":
+            required_status = (REQUIRED_STATUS_DELIVERED,)
+            print(f"🔍 กรองสถานะคอลัมน์ A: {REQUIRED_STATUS_DELIVERED}")
+        elif delivered_filter == "repeat":
+            required_status = (REQUIRED_STATUS_DELIVERED_FOLLOWUP,)
+            print(f"🔍 กรองสถานะคอลัมน์ A: {REQUIRED_STATUS_DELIVERED_FOLLOWUP}")
+        else:
+            required_status = NOTIFY_DELIVERED_STATUSES
         notify_result_value = "💬ແຈ້ງຮອດແລ້ວ"
     elif notify_stock_out:
         notify_mode = "stock_out"
@@ -4977,6 +5045,21 @@ def main():
             sys.exit(1)
         args = [a for j, a in enumerate(args) if j not in (pi, pi + 1)]
 
+    delivered_filter: Optional[str] = None
+    if "--delivered-filter" in args:
+        di = args.index("--delivered-filter")
+        if di + 1 >= len(args) or str(args[di + 1]).startswith("--"):
+            print("❌ ต้องระบุ first หรือ repeat หลัง --delivered-filter")
+            sys.exit(1)
+        delivered_filter = str(args[di + 1]).strip().lower()
+        if delivered_filter not in ("first", "repeat"):
+            print("❌ --delivered-filter ต้องเป็น first หรือ repeat")
+            sys.exit(1)
+        args = [a for j, a in enumerate(args) if j not in (di, di + 1)]
+    if delivered_filter and not notify_delivered:
+        print("❌ --delivered-filter ใช้ได้เฉพาะกับ --notify-delivered")
+        sys.exit(1)
+
     carrier_cli = ""
     if "--carrier" in args:
         ci = args.index("--carrier")
@@ -5069,6 +5152,7 @@ def main():
             notify_stock_out=notify_stock_out,
             notify_stock_available=notify_stock_available,
             page_filter=page_filter,
+            delivered_filter=delivered_filter,
         )
     elif len(args) >= 3:
         order_id, page_name, tracking_id = args[0], args[1], args[2]
@@ -5084,7 +5168,8 @@ def main():
         print("")
         print("  --carrier: ขนส่งสำหรับโหมด 3 args (เช่ນ ຮຸ່ງອາລຸນ → ลิงก์ halexpress.la; ค่าเริ่มต้น Anousith)")
         print("  --sheet: อ่านรายการจาก Google Sheet (ใส่ sheet_id หรือใช้จาก config/sheet_config.json)")
-        print("  --notify-delivered: โหมดແຈ້ງຮອດແລ້ວ (คอลัมน์ A = 🏁ຮອດປາຍທາງແລ້ວ ຫຼື 💬ແຈ້ງຮອດແລ້ວ — ส่งข้อความแจ้งถึง บันทึก Column V)")
+        print("  --notify-delivered: โหมดແຈ້ງຮອດແລ້ວ (คอลัมน์ A = 🏁 ຫຼື 💬 — ส่งข้อความแจ้งถึง บันทึก Column V)")
+        print("  --delivered-filter first|repeat: กรองเฉพาะ 🏁 (first) หรือ 💬 (repeat) คู่กับ --notify-delivered")
         print("  --notify-stock-out: โหมดແຈ້ງສິນຄ້າໝົດ (คอลัมน์ A = 🗑️ໝົດ หรือ ⏳ລໍສິນຄ້າ — ส่งข้อความแจ้งสินค้าหมด บันทึก Column V)")
         print("  --notify-stock-available: โหมดແຈ້ງມີສິນຄ້າ (คอลัมน์ A = 📢ແຈ້ງສິນຄ້າໝົດແລ້ວ — ส่งข้อความแจ้งมีสินค้า บันทึก Column V)")
         print("  --pages \"เพจ1,เพจ2\": กรองส่งเฉพาะเพจที่ระบุ (โหมดแจ้ง / --sheet)")

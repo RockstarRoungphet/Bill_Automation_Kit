@@ -346,7 +346,7 @@ def _load_real_page_names() -> List[str]:
     return names
 
 
-def _prompt_stock_available_pages(parent) -> Optional[List[str]]:
+def _prompt_stock_available_pages(parent, anchor=None) -> Optional[List[str]]:
     """Modal page picker for ແຈ້ງມີສິນຄ້າ.
 
     Returns:
@@ -356,6 +356,7 @@ def _prompt_stock_available_pages(parent) -> Optional[List[str]]:
     """
     from settings.thin_entry import create_thin_entry
     from settings.ui_scrollbar import create_vertical_scrollbar
+    from settings.window_place import show_placed_toplevel
 
     _WHITE = "#ffffff"
     _HOVER = "#f1f3f4"
@@ -373,9 +374,9 @@ def _prompt_stock_available_pages(parent) -> Optional[List[str]]:
 
     result: dict = {"value": None}
     win = tk.Toplevel(parent)
+    win.withdraw()
     win.title("ເລືອກເພຈ — ແຈ້ງມີສິນຄ້າ")
     win.transient(parent)
-    win.geometry("420x460")
     win.resizable(False, True)
     win.configure(bg=_WHITE)
 
@@ -563,6 +564,13 @@ def _prompt_stock_available_pages(parent) -> Optional[List[str]]:
     )
 
     win.protocol("WM_DELETE_WINDOW", _cancel)
+    show_placed_toplevel(
+        win,
+        anchor if anchor is not None else parent,
+        parent=parent,
+        width=420,
+        height=460,
+    )
     win.grab_set()
     search_entry.focus_set()
     win.wait_window()
@@ -1252,12 +1260,29 @@ def main():
             ("Capture HAL", hal_cmd, PROJECT_ROOT),
         ]
 
+    def _inject_browser_window_position(env: dict) -> None:
+        """Point Playwright Chrome under the toolbar, left-aligned in the Launcher."""
+        try:
+            from settings.window_place import under_xy
+
+            x, y = under_xy(
+                toolbar,
+                parent=root,
+                gap=4,
+                pad=0,
+                left_align_parent=True,
+            )
+            env["BAK_WINDOW_POSITION"] = f"{x},{y}"
+        except Exception:
+            pass
+
     def _start_pipeline(label: str, steps) -> None:
         if process_ref["pipeline"] is not None:
             messagebox.showinfo("ແຈ້ງ", "ກຳລັງຮັນຢູ່ແລ້ວ")
             return
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
+        _inject_browser_window_position(env)
         process_ref["pipeline"] = True
         _set_action_buttons(tk.DISABLED)
         append_status(f"\n{label}\n")
@@ -1293,14 +1318,21 @@ def main():
             steps,
         )
 
-    def run_notify_pipeline(kind: str, token_flag: str, pw_flag: str, title: str) -> None:
+    def run_notify_pipeline(
+        kind: str,
+        token_flag: str,
+        pw_flag: str,
+        title: str,
+        anchor=None,
+        extra_args: Optional[List[str]] = None,
+    ) -> None:
         if not SEND_BILL_API_SCRIPT.is_file() or not NO_API_SCRIPT.is_file():
             messagebox.showerror("ຜິດພາດ", "ບໍ່ພົບສະຄຣິບແຈ້ງ")
             return
 
         pages_args: List[str] = []
         if kind == "stock_available":
-            chosen = _prompt_stock_available_pages(root)
+            chosen = _prompt_stock_available_pages(root, anchor=anchor)
             if chosen is None:
                 return
             if chosen:
@@ -1310,17 +1342,23 @@ def main():
             else:
                 append_status("ສົ່ງທັງໝົດເພຈ\n")
 
+        extra = list(extra_args or [])
         api_py = _get_python_for_api()
         pw_py = _get_python_for_no_api()
         steps = [
             (
                 f"Token {title}",
-                [api_py, "-u", str(SEND_BILL_API_SCRIPT), "--sheet", token_flag] + pages_args,
+                [api_py, "-u", str(SEND_BILL_API_SCRIPT), "--sheet", token_flag]
+                + pages_args
+                + extra,
                 PROJECT_ROOT,
             ),
             (
                 f"Playwright {title}",
-                [pw_py, "-u", str(NO_API_SCRIPT), "--sheet", pw_flag] + pages_args + _no_api_user_data_args(),
+                [pw_py, "-u", str(NO_API_SCRIPT), "--sheet", pw_flag]
+                + pages_args
+                + extra
+                + _no_api_user_data_args(),
                 NO_API_SEND_BILL_DIR,
             ),
         ]
@@ -1384,6 +1422,7 @@ def main():
         try:
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
+            _inject_browser_window_position(env)
             python_exec = _get_python_for_no_api()
             cmd = [python_exec, "-u", str(NO_API_SCRIPT), "--sheet"] + _no_api_user_data_args()
             creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
@@ -1417,6 +1456,7 @@ def main():
         try:
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
+            _inject_browser_window_position(env)
             python_exec = _get_python_for_no_api()
             cmd = [
                 python_exec,
@@ -1456,6 +1496,7 @@ def main():
         try:
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
+            _inject_browser_window_position(env)
             python_exec = _get_python_for_no_api()
             cmd = [
                 python_exec,
@@ -1495,6 +1536,7 @@ def main():
         try:
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
+            _inject_browser_window_position(env)
             python_exec = _get_python_for_no_api()
             cmd = [
                 python_exec,
@@ -1970,7 +2012,12 @@ def main():
                 "ບໍ່ພົບ settings module — ກວດວ່າມີໂຟນເດີ settings ໃນໂປຣເຈັກ",
             )
             return
-        open_settings_window(root, PROJECT_ROOT)
+        anchor = None
+        try:
+            anchor = btn_settings
+        except NameError:
+            anchor = None
+        open_settings_window(root, PROJECT_ROOT, anchor=anchor)
 
     def maybe_first_run_settings():
         if check_setup_status is None:
@@ -1994,22 +2041,26 @@ def main():
 
     # ປຸ່ມແຖວດຽວ: webhook icon → ສົ່ງບິນ → ແຈ້ງ → ຕົວຊ່ວຍ → cleanup → Settings
 
-    def _edit_notify_message(kind: str, title: str) -> None:
+    def _edit_notify_message(kind: str, title: str, anchor=None) -> None:
         if ConfigIO is None:
             messagebox.showerror("ຜິດພາດ", "ບໍ່ພົບ settings module", parent=root)
             return
+        from settings.unicode_input import bind_unicode_editing
+        from settings.window_place import show_placed_toplevel
+
         io = ConfigIO(PROJECT_ROOT)
         msgs = io.load_notify_messages()
         win = tk.Toplevel(root)
+        win.withdraw()
         win.title(f"ແກ້ໄຂຂໍ້ຄວາມ — {title}")
         win.transient(root)
         win.resizable(True, True)
-        win.geometry("480x220")
         ttk.Label(win, text=f"ຂໍ້ຄວາມທີ່ສົ່ງໃຫ້ລູກຄ້າ ({title})").pack(
             anchor=tk.W, padx=10, pady=(10, 4)
         )
         txt = tk.Text(win, wrap=tk.WORD, height=6, font=("Segoe UI", 10))
         txt.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
+        bind_unicode_editing(txt)
         txt.insert("1.0", msgs.get(kind) or "")
         btn_row = ttk.Frame(win)
         btn_row.pack(fill=tk.X, padx=10, pady=(4, 10))
@@ -2028,6 +2079,13 @@ def main():
 
         ttk.Button(btn_row, text="ບັນທຶກ", command=_save).pack(side=tk.RIGHT)
         ttk.Button(btn_row, text="ຍົກເລີກ", command=win.destroy).pack(side=tk.RIGHT, padx=(0, 8))
+        show_placed_toplevel(
+            win,
+            anchor if anchor is not None else root,
+            parent=root,
+            width=480,
+            height=220,
+        )
         win.grab_set()
         txt.focus_set()
 
@@ -2038,11 +2096,11 @@ def main():
 
     def _notify_button_group(parent, label: str, kind: str, token_flag: str, pw_flag: str):
         wrap = ttk.Frame(parent)
-        action = ttk.Button(
-            wrap,
-            text=label,
-            style="Notify.TButton",
-            command=lambda: run_notify_pipeline(kind, token_flag, pw_flag, label),
+        action = ttk.Button(wrap, text=label, style="Notify.TButton")
+        action.configure(
+            command=lambda k=kind, tf=token_flag, pf=pw_flag, lb=label, a=action: run_notify_pipeline(
+                k, tf, pf, lb, anchor=a
+            )
         )
         action.pack()
 
@@ -2081,7 +2139,109 @@ def main():
                 kebab.place_forget()
             _draw_dots()
 
-        kebab.bind("<Button-1>", lambda _e: _edit_notify_message(kind, label))
+        kebab.bind(
+            "<Button-1>",
+            lambda _e, k=kind, lb=label, a=action: _edit_notify_message(k, lb, anchor=a),
+        )
+        wrap.bind("<Enter>", lambda _e: _set_hover(True))
+        wrap.bind("<Leave>", lambda _e: _set_hover(False))
+        action.bind("<Enter>", lambda _e: _set_hover(True))
+        kebab.bind("<Enter>", lambda _e: _set_hover(True))
+
+        wrap.pack(**_btn_pad)
+        return action
+
+    def _delivered_dropdown_button(parent):
+        """ແຈ້ງເຄື່ອງຮອດ — menu: first (🏁) / repeat (💬)."""
+        wrap = ttk.Frame(parent)
+        label = "ແຈ້ງເຄື່ອງຮອດ"
+        action = ttk.Button(wrap, text=label, style="Notify.TButton")
+
+        menu = tk.Menu(
+            action,
+            tearoff=0,
+            bg=_WHITE,
+            fg=_TEXT,
+            activebackground=_HOVER,
+            activeforeground=_TEXT,
+            relief=tk.SOLID,
+            bd=1,
+        )
+
+        def _run_first() -> None:
+            run_notify_pipeline(
+                "delivered",
+                "--notify-delivered",
+                "--notify-delivered",
+                "ແຈ້ງຮອດປາຍທາງແລ້ວ",
+                anchor=action,
+                extra_args=["--delivered-filter", "first"],
+            )
+
+        def _run_repeat() -> None:
+            run_notify_pipeline(
+                "delivered",
+                "--notify-delivered",
+                "--notify-delivered",
+                "ແຈ້ງຊ້ຳ",
+                anchor=action,
+                extra_args=["--delivered-filter", "repeat"],
+            )
+
+        menu.add_command(label="ແຈ້ງຮອດປາຍທາງແລ້ວ", command=_run_first)
+        menu.add_command(label="ແຈ້ງຊ້ຳ", command=_run_repeat)
+
+        def _show_menu(_event=None) -> None:
+            try:
+                action.update_idletasks()
+                x = action.winfo_rootx()
+                y = action.winfo_rooty() + action.winfo_height()
+                menu.tk_popup(x, y)
+            finally:
+                menu.grab_release()
+
+        action.configure(command=_show_menu)
+        action.pack()
+
+        kebab = tk.Canvas(wrap, width=10, height=22, highlightthickness=0, bd=0, bg=_WHITE)
+        hovering = {"on": False}
+
+        def _button_bg(active: bool = False) -> str:
+            try:
+                st = ("active",) if active else ()
+                return style.lookup("TButton", "background", st) or _WHITE
+            except Exception:
+                return _HOVER if active else _WHITE
+
+        def _draw_dots() -> None:
+            kebab.delete("dots")
+            kebab.configure(bg=_button_bg(hovering["on"]))
+            if not hovering["on"]:
+                return
+            kebab.update_idletasks()
+            w = int(kebab.winfo_width() or 10)
+            h = int(kebab.winfo_height() or 22)
+            cx = max(w // 2, 5)
+            mid = max(h // 2, 11)
+            r = 1.3
+            gap = 5
+            for y in (mid - gap, mid, mid + gap):
+                kebab.create_oval(
+                    cx - r, y - r, cx + r, y + r, fill="#333333", outline="#333333", tags="dots"
+                )
+
+        def _set_hover(on: bool) -> None:
+            hovering["on"] = on
+            if on:
+                kebab.place(in_=action, relx=1.0, rely=0.5, x=-2, anchor="e")
+            else:
+                kebab.place_forget()
+            _draw_dots()
+
+        kebab.bind(
+            "<Button-1>",
+            lambda _e: _edit_notify_message("delivered", label, anchor=action),
+        )
         wrap.bind("<Enter>", lambda _e: _set_hover(True))
         wrap.bind("<Leave>", lambda _e: _set_hover(False))
         action.bind("<Enter>", lambda _e: _set_hover(True))
@@ -2131,13 +2291,7 @@ def main():
 
     btn_send_bill = ttk.Button(toolbar, text="ສົ່ງບິນ", command=run_send_bill)
     btn_send_bill.pack(**_btn_pad)
-    btn_notify_delivered = _notify_button_group(
-        toolbar,
-        "ແຈ້ງຮອດແລ້ວ",
-        "delivered",
-        "--notify-delivered",
-        "--notify-delivered",
-    )
+    btn_notify_delivered = _delivered_dropdown_button(toolbar)
     btn_notify_stock_out = _notify_button_group(
         toolbar,
         "ແຈ້ງສິນຄ້າໝົດ",

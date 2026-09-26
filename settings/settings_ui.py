@@ -106,8 +106,8 @@ class SettingsWindow:
         self.io = ConfigIO(root_path)
         self.io.ensure_seeded()
         self.win = tk.Toplevel(parent)
+        self.win.withdraw()
         self.win.title("Settings — Bill Automation Kit")
-        self.win.geometry("820x760")
         self.win.minsize(740, 640)
         self.win.transient(parent)
         self._apply_minimal_style()
@@ -1699,6 +1699,7 @@ class SettingsWindow:
             self.var_fb_profile.get() or "no_api_send_bill/browser_profile",
             FACEBOOK_INBOX_URL,
             "Facebook",
+            anchor=getattr(self, "btn_fb_login", None),
         )
 
     def _open_hal_login(self) -> None:
@@ -1706,6 +1707,7 @@ class SettingsWindow:
             self.var_hal_profile.get() or "hal_browser_profile",
             HAL_LOGIN_URL,
             "HAL",
+            anchor=getattr(self, "btn_hal_login", None),
         )
 
     def _open_whatsapp_login(self) -> None:
@@ -1713,6 +1715,7 @@ class SettingsWindow:
             self.var_fb_profile.get() or "no_api_send_bill/browser_profile",
             WHATSAPP_WEB_URL,
             "WhatsApp",
+            anchor=getattr(self, "btn_wa_login", None),
         )
 
     def _set_browser_login_busy(self, busy: bool) -> None:
@@ -1755,7 +1758,13 @@ class SettingsWindow:
 
         self._browser_login_poll_id = self.win.after(400, _poll)
 
-    def _open_profile_login(self, path_value: str, url: str, label: str) -> None:
+    def _open_profile_login(
+        self,
+        path_value: str,
+        url: str,
+        label: str,
+        anchor: tk.Misc | None = None,
+    ) -> None:
         t = self._browser_login_thread
         if t is not None and t.is_alive():
             messagebox.showinfo(
@@ -1768,9 +1777,23 @@ class SettingsWindow:
         self._set_browser_login_busy(True)
         err: list = []
 
+        from settings.window_place import under_xy
+
+        btn = anchor if anchor is not None else self.win
+        try:
+            pos = under_xy(
+                btn,
+                parent=self.win,
+                gap=4,
+                pad=0,
+                left_align_parent=True,
+            )
+        except Exception:
+            pos = None
+
         def worker() -> None:
             try:
-                open_persistent_login(profile, url)
+                open_persistent_login(profile, url, window_position=pos)
             except Exception as e:
                 err.append(e)
             finally:
@@ -1792,5 +1815,19 @@ class SettingsWindow:
         self._schedule_browser_login_poll()
 
 
-def open_settings_window(parent: tk.Misc, project_root: Path) -> SettingsWindow:
-    return SettingsWindow(parent, Path(project_root))
+def open_settings_window(
+    parent: tk.Misc,
+    project_root: Path,
+    anchor: tk.Misc | None = None,
+) -> SettingsWindow:
+    from settings.window_place import show_placed_toplevel
+
+    sw = SettingsWindow(parent, Path(project_root))
+    show_placed_toplevel(
+        sw.win,
+        anchor if anchor is not None else parent,
+        parent=parent,
+        width=820,
+        height=760,
+    )
+    return sw

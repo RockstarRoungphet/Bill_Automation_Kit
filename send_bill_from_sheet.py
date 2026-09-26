@@ -549,14 +549,24 @@ def main_notify_mode(
     mode: str,
     dry_run: bool = False,
     page_filter: Optional[List[str]] = None,
+    delivered_filter: Optional[str] = None,
 ):
     """Notify mode (delivered/stock_out/stock_available): read sheet -> send text -> update Column V."""
     if mode == "delivered":
-        mode_title = "แจ้งถึงแล้ว (notify-delivered)"
-        required_statuses = NOTIFY_DELIVERED_STATUSES
+        if delivered_filter == "first":
+            mode_title = "แจ้งถึงปลายทางแล้ว (notify-delivered first)"
+            required_statuses = (REQUIRED_STATUS_DELIVERED,)
+            empty_hint = "❌ ไม่พบแถวที่ต้องแจ้ง (สถานะคอลัมน์ A ไม่ตรง 🏁ຮອດປາຍທາງແລ້ວ)"
+        elif delivered_filter == "repeat":
+            mode_title = "แจ้งถึงซ้ำ (notify-delivered repeat)"
+            required_statuses = (REQUIRED_STATUS_DELIVERED_FOLLOWUP,)
+            empty_hint = "❌ ไม่พบแถวที่ต้องแจ้ง (สถานะคอลัมน์ A ไม่ตรง 💬ແຈ້ງຮອດແລ້ວ)"
+        else:
+            mode_title = "แจ้งถึงแล้ว (notify-delivered)"
+            required_statuses = NOTIFY_DELIVERED_STATUSES
+            empty_hint = "❌ ไม่พบแถวที่ต้องแจ้ง (สถานะคอลัมน์ A ไม่ตรง 🏁 ຫรือ 💬 ตามโหมดแจ้งถึง)"
         notify_message = _notify_message_for("delivered")
         result_value = "💬ແຈ້ງຮອດແລ້ວ"
-        empty_hint = "❌ ไม่พบแถวที่ต้องแจ้ง (สถานะคอลัมน์ A ไม่ตรง 🏁 ຫรือ 💬 ตามโหมดแจ้งถึง)"
     elif mode == "stock_out":
         mode_title = "แจ้งสินค้าหมด (notify-stock-out)"
         required_statuses = NOTIFY_STOCK_OUT_STATUSES
@@ -700,6 +710,18 @@ def main():
             sys.exit(1)
         args = [a for j, a in enumerate(args) if j not in (i, i + 1)]
 
+    delivered_filter: Optional[str] = None
+    if "--delivered-filter" in args:
+        i = args.index("--delivered-filter")
+        if i + 1 >= len(args) or str(args[i + 1]).startswith("--"):
+            print("❌ ต้องระบุ first หรือ repeat หลัง --delivered-filter")
+            sys.exit(1)
+        delivered_filter = str(args[i + 1]).strip().lower()
+        if delivered_filter not in ("first", "repeat"):
+            print("❌ --delivered-filter ต้องเป็น first หรือ repeat")
+            sys.exit(1)
+        args = [a for j, a in enumerate(args) if j not in (i, i + 1)]
+
     notify_modes = [
         ("delivered", notify_delivered),
         ("stock_out", notify_stock_out),
@@ -710,9 +732,18 @@ def main():
         print("❌ เลือกได้เพียงโหมดแจ้งเดียว: --notify-delivered หรือ --notify-stock-out หรือ --notify-stock-available")
         sys.exit(1)
 
+    if delivered_filter and not notify_delivered:
+        print("❌ --delivered-filter ใช้ได้เฉพาะกับ --notify-delivered")
+        sys.exit(1)
+
     # --- Notify mode ---
     if selected_notify_modes:
-        main_notify_mode(selected_notify_modes[0], dry_run, page_filter=page_filter)
+        main_notify_mode(
+            selected_notify_modes[0],
+            dry_run,
+            page_filter=page_filter,
+            delivered_filter=delivered_filter,
+        )
         return
 
     bills_dir: Optional[str] = None
@@ -738,7 +769,7 @@ def main():
         print("ใช้:")
         print("  python3 send_bill_from_sheet.py --sheet [--bills-dir โฟลเดอร์] [--dry-run]")
         print("  python3 send_bill_from_sheet.py --csv <path_to_csv> [--bills-dir โฟลเดอร์] [--dry-run]")
-        print("  python3 send_bill_from_sheet.py --sheet --notify-delivered [--dry-run]")
+        print("  python3 send_bill_from_sheet.py --sheet --notify-delivered [--delivered-filter first|repeat] [--dry-run]")
         print("  python3 send_bill_from_sheet.py --sheet --notify-stock-out [--dry-run]")
         print("  python3 send_bill_from_sheet.py --sheet --notify-stock-available [--pages \"เพจ1,เพจ2\"] [--dry-run]")
         sys.exit(1)
